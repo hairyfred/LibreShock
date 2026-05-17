@@ -7,13 +7,24 @@ Control BLE-based shock/vibration wearables without vendor apps.
 
 All core actions (vibrate, beep, zap) have been successfully reverse-engineered and tested.
 
+## Project rule: Python first, full feature parity
+
+New protocol features are implemented in `libreshock.py` **first**, then ported
+to the Android app under `android/`. Both must stay at feature parity so users
+can pick either tool with full functionality — some prefer scripting, some
+prefer the GUI. If something exists in one, it must exist in the other.
+
 ---
 
 ## Target Device
-- **BLE Name Pattern**: `*-3-*` (e.g., `Pavlok-3-XXXX`)
+- **BLE Name Pattern**: anything starting with `Pavlok` (e.g., `Pavlok-3-XXXX`)
+  - Today's format is `Pavlok-<model>-<id>` where the number is the hardware
+    generation. Protocol was reverse-engineered against a Pavlok-3. Earlier
+    and later models likely share the same protocol but are untested. We
+    match the `Pavlok` prefix so future name formats still pick up.
 - **Manufacturer**: Behavioral Technology Group, Inc.
-- **Firmware**: 6.10.0
-- **Hardware**: 6.0.0
+- **Firmware (tested)**: 6.10.0
+- **Hardware (tested)**: 6.0.0
 
 ## Important Notes
 - **Avoid vendor brand names in code** - use generic terms like "ShockDevice", "device", etc.
@@ -271,6 +282,21 @@ repeat, TM byte 3 = `0x80` (no day bits set).
 
 ## Other Services (Reference)
 
+### Service 156e1000 - Action Settings (extended)
+The action service has more characteristics than the four used for instant
+actions. Verified via service enumeration (`scripts/dump_services.py`):
+
+| Char | Properties | Notes |
+|------|------------|-------|
+| 1001 | write, read | Vibrate (see Action Commands) |
+| 1002 | write, read | Beep |
+| 1003 | write, read, notify | Zap |
+| 1004 | write, read | LED |
+| 1005 | write, read | **Device clock** — 8-byte BCD: `[ss, mm, HH, DD, 00, MM, YY, dow]` |
+| 1006 | write, read | Unknown (4 bytes) |
+| 1007 | write, read | Unknown (4 bytes; alarm counter?) |
+| 1008 | write, read | Unknown (8 bytes) |
+
 ### Service 156e0000 - Device State
 | Char | Properties | Notes |
 |------|------------|-------|
@@ -292,8 +318,24 @@ repeat, TM byte 3 = `0x80` (no day bits set).
 | 5003 | read, notify | Unknown |
 
 ### Standard Services
-- **Battery**: `0000180f-...` / char `00002a19-...`
-- **Device Info**: `0000180a-...`
+
+**Battery Service** (`0000180f-0000-1000-8000-00805f9b34fb`)
+- Char `0x2A19` Battery Level: uint8 0-100. Read + notify (level updates).
+
+**Device Information Service** (`0000180a-0000-1000-8000-00805f9b34fb`)
+- Char `0x2A29` Manufacturer Name: e.g. "Behavioral Technology Group, Inc."
+- Char `0x2A24` Model Number: e.g. "Pavlok-S 03" (truncated read returns "Pavlok-S")
+- Char `0x2A25` Serial Number: 12 hex chars matching the BLE MAC tail, e.g. "107C6224F11F"
+- Char `0x2A26` Firmware Revision: e.g. "6.10.0"
+- Char `0x2A27` Hardware Revision: e.g. "6.0.0"
+
+All ASCII strings. Read once on connect; values don't change at runtime.
+
+### Custom date/time and timezone (decode TBD)
+The vendor app reads two more characteristics on the Device Info screen
+that we haven't fully decoded:
+- Timezone offset: 4-byte ASCII like `"+100"` (= UTC+1:00). Vendor handle 0x0079 (UUID TBD).
+- Date/time on device: 8-byte binary blob like `13 50 12 17 00 05 26 04`. Pattern suggests `min sec hour day ?? month year-2000 ??` but offset/order not verified.
 
 ---
 

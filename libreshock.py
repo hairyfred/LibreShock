@@ -65,8 +65,10 @@ class AlarmConfig:
                 days.append(name)
         return days
 
-# Device identification
-DEVICE_NAME_PATTERN = "Pavlok-3"
+# Device identification. Vendor uses "Pavlok-<model>-<id>" today but we match
+# anything starting with "Pavlok" so future name formats (other models or
+# rebrands) still work. Protocol verified on Pavlok-3; other models untested.
+DEVICE_NAME_PATTERN = "Pavlok"
 
 # Characteristic UUIDs (Service 156e1000)
 CHAR_VIBE = "00001001-0000-1000-8000-00805f9b34fb"
@@ -78,6 +80,22 @@ CHAR_LED  = "00001004-0000-1000-8000-00805f9b34fb"
 CHAR_CTRL = "00005001-0000-1000-8000-00805f9b34fb"
 CHAR_DATA = "00005002-0000-1000-8000-00805f9b34fb"
 
+# Standard Battery Service (0x180F)
+CHAR_BATTERY = "00002a19-0000-1000-8000-00805f9b34fb"
+
+# Standard Device Information Service (0x180A)
+CHAR_MANUFACTURER = "00002a29-0000-1000-8000-00805f9b34fb"
+CHAR_MODEL        = "00002a24-0000-1000-8000-00805f9b34fb"
+CHAR_SERIAL       = "00002a25-0000-1000-8000-00805f9b34fb"
+CHAR_HARDWARE_REV = "00002a27-0000-1000-8000-00805f9b34fb"
+CHAR_FIRMWARE_REV = "00002a26-0000-1000-8000-00805f9b34fb"
+CHAR_SOFTWARE_REV = "00002a28-0000-1000-8000-00805f9b34fb"  # used by vendor as timezone string
+
+# Custom device-time characteristic. Lives in the action-settings service
+# (156e1000), char 1005 — NOT in 156e2000 as a casual reading of CLAUDE.md
+# might suggest. Returns an 8-byte BCD-encoded timestamp.
+CHAR_TIME = "00001005-0000-1000-8000-00805f9b34fb"
+
 # Default profile name for alarms
 DEFAULT_PROFILE = b"Single 1"
 
@@ -85,6 +103,46 @@ DEFAULT_PROFILE = b"Single 1"
 TRIGGER_FLAG = 0x80
 ENABLED_FLAG = 0x01
 TRIGGER_ENABLED = TRIGGER_FLAG | ENABLED_FLAG  # 0x81
+
+
+_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _format_timezone(raw: str) -> str:
+    """Vendor stores timezone as e.g. '+100' meaning UTC+1:00, or '-0530' meaning UTC-5:30.
+    Reformat for display as 'UTC +1:00'."""
+    if not raw:
+        return raw
+    sign = "+" if raw[0] != "-" else "-"
+    digits = raw.lstrip("+-")
+    if not digits.isdigit():
+        return raw  # unknown shape
+    digits = digits.zfill(3)
+    minutes = digits[-2:]
+    hours = digits[:-2].lstrip("0") or "0"
+    return f"UTC {sign}{hours}:{minutes}"
+
+
+def _decode_device_time(buf: bytes) -> Optional[dict]:
+    """Decode the 8-byte BCD date/time blob from char 1005.
+
+    Format: [sec_bcd, min_bcd, hour_bcd, day_bcd, 0x00, month_bcd, year_bcd, ??]
+    The 8th byte doesn't match any standard day-of-week encoding — ignored.
+    """
+    if len(buf) < 8:
+        return None
+    sec = _bcd_to_int(buf[0])
+    minute = _bcd_to_int(buf[1])
+    hour = _bcd_to_int(buf[2])
+    day = _bcd_to_int(buf[3])
+    month = _bcd_to_int(buf[5])
+    year = 2000 + _bcd_to_int(buf[6])
+    month_name = _MONTH_NAMES[month - 1] if 1 <= month <= 12 else f"M{month}"
+    return {
+        "date": f"{month_name} {day} {year}",
+        "time": f"{hour:02d}:{minute:02d}:{sec:02d}",
+    }
 
 
 def _crc16_ccitt(data: bytes) -> int:
@@ -354,6 +412,62 @@ class ShockDevice:
         await self.client.write_gatt_char(CHAR_CTRL, bytes([0x03, 0x01]), response=True)
         print("Snooze sent")
         return True
+
+    async def read_battery(self) -> Optional[int]:
+        """Read the watch's battery percentage (0-100). Returns None on error."""
+        try:
+            val = await self.client.read_gatt_char(CHAR_BATTERY)
+            return val[0] if val else None
+        except Exception as e:
+            print(f"Battery read failed: {e}")
+            return None
+
+    async def read_device_info(self) -> dict:
+        """Read everything shown on the vendor app's Device Info screen.
+
+        Returns a dict with keys: name (BLE adv name), manufacturer, model,
+        serial, hardware_revision, firmware_revision, timezone, date, time,
+        weekday. Missing fields are omitted.
+        """
+        out: dict = {}
+
+        # BLE advertisement name (used by the vendor app as "Device name")
+        if self.device is not None and self.device.name:
+            out["name"] = self.device.name
+
+        # Standard Device Information Service strings
+        str_fields = {
+            "manufacturer": CHAR_MANUFACTURER,
+            "model": CHAR_MODEL,
+            "serial": CHAR_SERIAL,
+            "hardware_revision": CHAR_HARDWARE_REV,
+            "firmware_revision": CHAR_FIRMWARE_REV,
+        }
+        for key, char in str_fields.items():
+            try:
+                val = await self.client.read_gatt_char(char)
+                out[key] = val.decode("utf-8", errors="ignore").rstrip("\x00").strip()
+            except Exception:
+                pass
+
+        # Vendor repurposes Software Revision String as timezone ("+100" = UTC+1:00)
+        try:
+            val = await self.client.read_gatt_char(CHAR_SOFTWARE_REV)
+            raw = val.decode("utf-8", errors="ignore").rstrip("\x00").strip()
+            out["timezone"] = _format_timezone(raw)
+        except Exception:
+            pass
+
+        # Date/time on device (char 00001005)
+        try:
+            val = await self.client.read_gatt_char(CHAR_TIME)
+            decoded = _decode_device_time(val)
+            if decoded:
+                out.update(decoded)
+        except Exception:
+            pass
+
+        return out
 
     async def set_alarms(self, alarms: List[AlarmConfig], profile: bytes = DEFAULT_PROFILE) -> bool:
         """
@@ -625,6 +739,8 @@ ACTIONS:
     alarm     Manage alarms
     stop      Stop a currently-firing alarm
     snooze    Snooze a currently-firing alarm
+    battery   Show watch battery percentage
+    info      Show device info (manufacturer, model, serial, fw/hw versions)
     status    Show device configuration
     help      Show this help message
 
@@ -679,7 +795,8 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("action", nargs='?', default="help",
-                        choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze", "status", "help"],
+                        choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze",
+                                 "battery", "info", "status", "help"],
                         help="Action to perform")
 
     # Common options
@@ -745,6 +862,20 @@ async def main():
             await device.stop_alarm()
         elif args.action == "snooze":
             await device.snooze_alarm()
+        elif args.action == "battery":
+            level = await device.read_battery()
+            if level is None:
+                print("Could not read battery")
+            else:
+                print(f"Battery: {level}%")
+        elif args.action == "info":
+            info = await device.read_device_info()
+            if not info:
+                print("No device info available")
+            else:
+                print("Device Info:")
+                for key, value in info.items():
+                    print(f"  {key.replace('_', ' ').title():20s} {value}")
         elif args.action == "alarm":
             if args.list:
                 alarms = await device.list_alarms()

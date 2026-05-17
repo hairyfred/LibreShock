@@ -21,8 +21,11 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -44,7 +47,9 @@ class ShockDevice(private val context: Context) {
 
     companion object {
         private const val TAG = "ShockDevice"
-        const val DEVICE_NAME_PATTERN = "Pavlok-3"
+        // Match anything starting with "Pavlok" so other models and any future
+        // name format are picked up. Protocol verified on Pavlok-3 only.
+        const val DEVICE_NAME_PATTERN = "Pavlok"
 
         // Action characteristics (service 156e1000)
         val CHAR_VIBE: UUID = UUID.fromString("00001001-0000-1000-8000-00805f9b34fb")
@@ -56,6 +61,9 @@ class ShockDevice(private val context: Context) {
         val CHAR_CTRL: UUID = UUID.fromString("00005001-0000-1000-8000-00805f9b34fb")
         val CHAR_DATA: UUID = UUID.fromString("00005002-0000-1000-8000-00805f9b34fb")
         val CHAR_NOTIFY: UUID = UUID.fromString("00005003-0000-1000-8000-00805f9b34fb")
+
+        // Standard battery service
+        val CHAR_BATTERY: UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
 
         // Client Characteristic Configuration Descriptor — same for all chars
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -74,6 +82,10 @@ class ShockDevice(private val context: Context) {
     private var connectCont: Continuation<Boolean>? = null
     private var writeCont: Continuation<Boolean>? = null
     private var descCont: Continuation<Boolean>? = null
+    private var readCont: Continuation<ByteArray?>? = null
+
+    /** Set to true before .disconnect() so the resulting STATE_DISCONNECTED is reported as intentional. */
+    private var intentionalDisconnect = false
 
     // Channels for receiving notifications from specific characteristics
     private val dataNotifs = Channel<ByteArray>(Channel.UNLIMITED)
@@ -82,6 +94,9 @@ class ShockDevice(private val context: Context) {
     private val _alarmEvents = MutableSharedFlow<NotifyEvent>(extraBufferCapacity = 16)
     /** Persistent stream of alarm-fire / stop / snooze events from the watch. */
     val alarmEvents: SharedFlow<NotifyEvent> = _alarmEvents.asSharedFlow()
+
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     @SuppressLint("MissingPermission")
     fun scan(): Flow<ScanResult> = callbackFlow {
@@ -104,13 +119,19 @@ class ShockDevice(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     suspend fun connect(device: BluetoothDevice): Boolean {
+        intentionalDisconnect = false
+        _connectionState.value = ConnectionState.Connecting
         val ok = suspendCoroutine<Boolean> { cont ->
             connectCont = cont
             gatt = device.connectGatt(context, false, gattCallback)
         }
-        if (!ok) return false
-        // After services are discovered, enable notifications on the 3 relevant chars
-        return setupNotifications()
+        if (!ok) {
+            _connectionState.value = ConnectionState.Disconnected
+            return false
+        }
+        val notifyOk = setupNotifications()
+        if (notifyOk) _connectionState.value = ConnectionState.Connected
+        return notifyOk
     }
 
     /** Connect by stored MAC address. Returns false if the device is unknown or out of range. */
@@ -127,12 +148,28 @@ class ShockDevice(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        intentionalDisconnect = true
         gatt?.disconnect()
         gatt?.close()
         gatt = null
     }
 
     val isConnected: Boolean get() = gatt != null
+
+    /** Read the watch's battery level (0-100). Returns null if the read fails. */
+    @SuppressLint("MissingPermission")
+    suspend fun readBattery(): Int? = gattMutex.withLock {
+        val g = gatt ?: return@withLock null
+        val char = findCharacteristic(g, CHAR_BATTERY) ?: return@withLock null
+        val value = suspendCoroutine<ByteArray?> { cont ->
+            readCont = cont
+            if (!g.readCharacteristic(char)) {
+                readCont = null
+                cont.resume(null)
+            }
+        }
+        value?.firstOrNull()?.toInt()?.and(0xFF)
+    }
 
     // ---- Instant actions ----
 
@@ -278,10 +315,14 @@ class ShockDevice(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> g.discoverServices()
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    Log.d(TAG, "Disconnected (status=$status)")
+                    Log.d(TAG, "Disconnected (status=$status, intentional=$intentionalDisconnect)")
+                    val wasIntentional = intentionalDisconnect
+                    intentionalDisconnect = false
                     connectCont?.resume(false); connectCont = null
                     g.close()
                     if (gatt === g) gatt = null
+                    _connectionState.value =
+                        if (wasIntentional) ConnectionState.Disconnected else ConnectionState.Lost
                 }
             }
         }
@@ -300,6 +341,23 @@ class ShockDevice(private val context: Context) {
         @Deprecated("Deprecated in Java")
         override fun onDescriptorWrite(g: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) {
             descCont?.resume(status == BluetoothGatt.GATT_SUCCESS); descCont = null
+        }
+
+        // Pre-Tiramisu read callback
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicRead(g: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
+            @Suppress("DEPRECATION")
+            val value = char.value
+            readCont?.resume(if (status == BluetoothGatt.GATT_SUCCESS) value else null); readCont = null
+        }
+
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            char: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int,
+        ) {
+            readCont?.resume(if (status == BluetoothGatt.GATT_SUCCESS) value else null); readCont = null
         }
 
         @Deprecated("Deprecated in Java")
@@ -339,6 +397,15 @@ class ShockDevice(private val context: Context) {
                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
             }
     }
+}
+
+/** High-level connection state, exposed as a StateFlow for UI to observe. */
+sealed class ConnectionState {
+    object Disconnected : ConnectionState()
+    object Connecting : ConnectionState()
+    object Connected : ConnectionState()
+    /** Connection dropped without a call to [ShockDevice.disconnect] — candidate for auto-reconnect. */
+    object Lost : ConnectionState()
 }
 
 private val SUCCESS_RESP_A = byteArrayOf(0, 0, 0, 0)
