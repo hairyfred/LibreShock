@@ -15,15 +15,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -145,6 +152,7 @@ private fun stimSummary(alarm: AlarmConfig): String {
     return if (parts.isEmpty()) "(no stims)" else parts.joinToString(" • ")
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlarmEditScreen(
     device: ShockDevice,
@@ -164,8 +172,11 @@ fun AlarmEditScreen(
         zap = AlarmAction(enabled = false),
     )
 
-    var hour by remember { mutableStateOf(starting.hour) }
-    var minute by remember { mutableStateOf(starting.minute) }
+    val timePickerState = rememberTimePickerState(
+        initialHour = starting.hour,
+        initialMinute = starting.minute,
+        is24Hour = true,
+    )
     var dayMask by remember { mutableStateOf(starting.weekdays and 0x7F) }
     var snooze by remember { mutableStateOf(starting.snooze) }
     var interval by remember { mutableStateOf(starting.stimulusInterval.toFloat()) }
@@ -180,9 +191,10 @@ fun AlarmEditScreen(
 
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showTimeDialog by remember { mutableStateOf(false) }
 
     fun build(): AlarmConfig = AlarmConfig(
-        hour = hour, minute = minute, name = "alarm",
+        hour = timePickerState.hour, minute = timePickerState.minute, name = "alarm",
         weekdays = dayMask, snooze = snooze, stimulusInterval = interval.toInt().coerceAtLeast(1),
         vibration = AlarmAction(enabled = vibeOn, count = 5, intensity = vibeIntensity.toInt()),
         beep = AlarmAction(enabled = beepOn, count = 5, intensity = beepIntensity.toInt()),
@@ -212,19 +224,47 @@ fun AlarmEditScreen(
         if (ok) onDone() else error = "Failed to delete"
     }
 
+    val scrollState = rememberScrollState()
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding)
+            .verticalScroll(scrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("Time", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                TimeWheels(hour = hour, minute = minute, onChange = { h, m -> hour = h; minute = m })
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showTimeDialog = true },
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Time", style = MaterialTheme.typography.titleMedium)
+                    Text("Tap to change", style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    "%02d:%02d".format(timePickerState.hour, timePickerState.minute),
+                    style = MaterialTheme.typography.displayMedium,
+                    fontWeight = FontWeight.Bold,
+                )
             }
+        }
+
+        if (showTimeDialog) {
+            AlertDialog(
+                onDismissRequest = { showTimeDialog = false },
+                confirmButton = {
+                    TextButton(onClick = { showTimeDialog = false }) { Text("OK") }
+                },
+                title = { Text("Select time") },
+                text = { TimePicker(state = timePickerState) },
+            )
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -358,30 +398,3 @@ private fun DayChip(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/**
- * Simple two-slider time entry. Replaces Material 3 TimePicker so we don't
- * have to deal with the experimental API and dialog flow.
- */
-@Composable
-private fun TimeWheels(hour: Int, minute: Int, onChange: (Int, Int) -> Unit) {
-    Text(
-        "%02d:%02d".format(hour, minute),
-        style = MaterialTheme.typography.displayMedium,
-        fontWeight = FontWeight.Bold,
-    )
-    Spacer(Modifier.height(8.dp))
-    Text("Hour", style = MaterialTheme.typography.titleSmall)
-    Slider(
-        value = hour.toFloat(),
-        onValueChange = { onChange(it.toInt(), minute) },
-        valueRange = 0f..23f,
-        steps = 22,
-    )
-    Text("Minute", style = MaterialTheme.typography.titleSmall)
-    Slider(
-        value = minute.toFloat(),
-        onValueChange = { onChange(hour, it.toInt()) },
-        valueRange = 0f..59f,
-        steps = 58,
-    )
-}
