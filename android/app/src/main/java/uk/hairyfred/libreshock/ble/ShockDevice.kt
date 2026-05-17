@@ -278,23 +278,33 @@ class ShockDevice(private val context: Context) {
         success == true
     }
 
-    /** Read the alarms currently stored on the device. */
+    /** Read the alarms currently stored on the device.
+     *
+     * Returns null on read failure (no response received), an empty list when
+     * the device confirms it has no alarms, or the alarm list otherwise. The
+     * null/empty distinction lets callers preserve a cached list across
+     * transient read failures rather than silently wiping it.
+     */
     suspend fun listAlarms(
         profile: ByteArray = "Single 1".toByteArray(Charsets.UTF_8),
-    ): List<AlarmConfig> = gattMutex.withLock {
+    ): List<AlarmConfig>? = gattMutex.withLock {
         drain(ctrlNotifs)
         drain(dataNotifs)
-        if (!writeChar(CHAR_CTRL, CtrlCommand.queryAlarms(profile))) return@withLock emptyList()
+        if (!writeChar(CHAR_CTRL, CtrlCommand.queryAlarms(profile))) return@withLock null
 
-        // The device echoes the alarm packet back via CTRL (and sometimes DATA)
-        // notifications. Collect until a quiet period.
+        // The device echoes the alarm packet back via CTRL notifications.
+        // First chunk can take a moment if the device is busy; once data starts
+        // flowing, gaps between chunks are short.
         val buffer = ArrayList<Byte>(512)
+        var firstChunk = true
         while (true) {
-            val chunk = withTimeoutOrNull(800) { ctrlNotifs.receive() } ?: break
+            val timeout = if (firstChunk) 3000L else 500L
+            val chunk = withTimeoutOrNull(timeout) { ctrlNotifs.receive() } ?: break
             for (b in chunk) buffer.add(b)
+            firstChunk = false
         }
-        if (buffer.isEmpty()) return@withLock emptyList()
-        parseAlarms(buffer.toByteArray())
+        if (buffer.isEmpty()) return@withLock null  // no response at all
+        parseAlarms(buffer.toByteArray())  // may legitimately return empty list
     }
 
     suspend fun stopAlarm(): Boolean = gattMutex.withLock {

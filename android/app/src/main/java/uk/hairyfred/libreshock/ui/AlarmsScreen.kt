@@ -58,24 +58,22 @@ private val DAY_BITS = listOf(
 
 @Composable
 fun AlarmsScreen(
-    device: ShockDevice,
+    alarms: List<AlarmConfig>?,
     padding: PaddingValues,
+    onRefresh: () -> Unit,
     onEdit: (alarm: AlarmConfig?, index: Int?) -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
-    var alarms by remember { mutableStateOf<List<AlarmConfig>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
-    var status by remember { mutableStateOf<String?>(null) }
+    // alarms == null means "not loaded yet" (or read failed). Empty list means
+    // we have a confirmed empty state. Trigger an initial refresh if we don't
+    // have a list yet — but don't re-read every time the screen recomposes.
+    LaunchedEffect(Unit) { if (alarms == null) onRefresh() }
 
-    suspend fun refresh() {
-        loading = true
-        status = "Loading alarms..."
-        alarms = device.listAlarms()
-        loading = false
-        status = if (alarms.isEmpty()) "No alarms set" else null
+    val list = alarms ?: emptyList()
+    val statusText = when {
+        alarms == null -> "Loading alarms..."
+        alarms.isEmpty() -> "No alarms set"
+        else -> null
     }
-
-    LaunchedEffect(Unit) { refresh() }
 
     Column(
         modifier = Modifier
@@ -88,19 +86,13 @@ fun AlarmsScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(
-                onClick = { onEdit(null, null) },
-                enabled = !loading,
-            ) { Text("+ Add alarm") }
-            OutlinedButton(
-                onClick = { scope.launch { refresh() } },
-                enabled = !loading,
-            ) { Text("Refresh") }
+            Button(onClick = { onEdit(null, null) }) { Text("+ Add alarm") }
+            OutlinedButton(onClick = onRefresh) { Text("Refresh") }
         }
-        status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        statusText?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            itemsIndexed(alarms) { index, alarm ->
+            itemsIndexed(list) { index, alarm ->
                 AlarmCard(alarm = alarm, onClick = { onEdit(alarm, index) })
             }
         }
@@ -204,7 +196,10 @@ fun AlarmEditScreen(
     suspend fun saveAndExit() {
         saving = true
         error = null
-        val current = device.listAlarms().toMutableList()
+        val current = device.listAlarms()?.toMutableList()
+        if (current == null) {
+            saving = false; error = "Could not read existing alarms"; return
+        }
         val newAlarm = build()
         if (index != null && index in current.indices) current[index] = newAlarm
         else current.add(newAlarm)
@@ -217,7 +212,10 @@ fun AlarmEditScreen(
         if (index == null) { onDone(); return }
         saving = true
         error = null
-        val current = device.listAlarms().toMutableList()
+        val current = device.listAlarms()?.toMutableList()
+        if (current == null) {
+            saving = false; error = "Could not read existing alarms"; return
+        }
         if (index in current.indices) current.removeAt(index)
         val ok = device.setAlarms(current)
         saving = false

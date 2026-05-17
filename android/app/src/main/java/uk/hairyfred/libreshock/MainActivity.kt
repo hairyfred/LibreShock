@@ -109,6 +109,10 @@ fun AppRoot() {
     var firingAlarmId by remember { mutableStateOf<Int?>(null) }
     var batteryPercent by remember { mutableStateOf<Int?>(null) }
     var nextAlarmLabel by remember { mutableStateOf<String?>(null) }
+    // Single source of truth for the alarm list. Refreshed on connect and
+    // after alarm-edit; both the next-alarm label and the AlarmsScreen list
+    // read from this state so we never issue parallel listAlarms() queries.
+    var alarms by remember { mutableStateOf<List<AlarmConfig>?>(null) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
     val device = remember { ShockDevice(context) }
@@ -121,13 +125,17 @@ fun AppRoot() {
         Unit
     }
 
-    suspend fun refreshNextAlarm() {
+    suspend fun refreshAlarms() {
         if (device.connectionState.value !is ConnectionState.Connected) {
-            nextAlarmLabel = null; return
+            alarms = null; nextAlarmLabel = null; return
         }
-        val alarms = try { device.listAlarms() } catch (_: Exception) { emptyList() }
-        val next = nextEnabledAlarm(alarms)
-        nextAlarmLabel = next?.let { (_, fireAt) -> formatNextAlarm(fireAt) }
+        // listAlarms returns null when the read fails — in that case keep
+        // whatever cache we had rather than wiping the UI to "no alarms".
+        val fresh = try { device.listAlarms() } catch (_: Exception) { null }
+        if (fresh != null) {
+            alarms = fresh
+            nextAlarmLabel = nextEnabledAlarm(fresh)?.let { (_, fireAt) -> formatNextAlarm(fireAt) }
+        }
     }
     val rootScope = rememberCoroutineScope()
 
@@ -232,7 +240,7 @@ fun AppRoot() {
     LaunchedEffect(device) {
         device.connectionState.collect { state ->
             when (state) {
-                ConnectionState.Connected -> refreshNextAlarm()
+                ConnectionState.Connected -> refreshAlarms()
                 ConnectionState.Lost -> {
                     nextAlarmLabel = null
                     if (btAdapter?.isEnabled == true) {
@@ -300,14 +308,19 @@ fun AppRoot() {
     ) { padding ->
         when (screen) {
             "settings" -> SettingsScreen(prefs, padding)
-            "alarms" -> AlarmsScreen(device, padding) { alarm, index ->
-                editingAlarm = alarm
-                editingIndex = index
-                screen = "alarm_edit"
-            }
+            "alarms" -> AlarmsScreen(
+                alarms = alarms,
+                padding = padding,
+                onRefresh = { rootScope.launch { refreshAlarms() } },
+                onEdit = { alarm, index ->
+                    editingAlarm = alarm
+                    editingIndex = index
+                    screen = "alarm_edit"
+                },
+            )
             "alarm_edit" -> AlarmEditScreen(device, editingAlarm, editingIndex, padding) {
                 screen = "alarms"
-                rootScope.launch { refreshNextAlarm() }
+                rootScope.launch { refreshAlarms() }
             }
             "device_info" -> DeviceInfoScreen(
                 device = device,
@@ -429,6 +442,17 @@ fun ConnectionFlow(
         }
         if (!permissionsGranted) {
             permLauncher.launch(required)
+            return@LaunchedEffect
+        }
+
+        // CRUCIAL: this LaunchedEffect re-runs every time we navigate back to the
+        // main screen (the composable is destroyed when we leave). If we're
+        // already connected, do not call connect() again — that would tear down
+        // the live GATT and break ongoing notifications (which is why navigating
+        // in/out of Manage alarms was wiping the alarm cache).
+        if (device.connectionState.value is ConnectionState.Connected) {
+            val name = prefs.getString("last_name", null) ?: "device"
+            status = "Connected to $name"
             return@LaunchedEffect
         }
 

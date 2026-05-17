@@ -65,8 +65,18 @@ Full command reference: **[docs/CLI.md](docs/CLI.md)**.
 
 ## Android app
 
-Project lives under `android/`. Open in Android Studio, build, and install
-on a connected phone with USB debugging on. Min SDK 26 (Android 8.0).
+| Main | Alarms | Edit alarm |
+|------|--------|------------|
+| ![Main screen](docs/images/main.png) | ![Alarms list](docs/images/alarms.png) | ![Edit alarm](docs/images/edit-alarm.png) |
+
+Pre-built signed APKs are attached to each release on the
+**[Releases page](https://github.com/hairyfred/Libreshock/releases)** — grab
+the `libreshock-vX.Y.Z.apk` from the latest release, transfer to your phone,
+and install (you'll need to allow installs from unknown sources).
+
+To build it yourself: project lives under `android/`. Open in Android Studio,
+build, and install on a connected phone with USB debugging on. Min SDK 26
+(Android 8.0).
 
 Permissions: `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` (API 31+); falls
 back to `ACCESS_FINE_LOCATION` on older Android. Requested at runtime.
