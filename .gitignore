@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Claude Code local settings
+.claude/
+
+# Captured BLE traffic (per-device, contains MAC addresses & device-specific data)
+captures/
+
+# Pre-rewrite scratch scripts — contain hardcoded personal device MAC.
+# Kept locally as historical reference, not for the public repo.
+scripts/old/
+
+# IDE
+.vscode/
+*.swp
