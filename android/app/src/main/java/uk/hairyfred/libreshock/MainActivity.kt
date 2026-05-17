@@ -27,12 +27,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarDuration
@@ -67,6 +79,8 @@ import uk.hairyfred.libreshock.ble.BatteryHistory
 import uk.hairyfred.libreshock.ble.ConnectionState
 import uk.hairyfred.libreshock.ble.NotifyOpcode
 import uk.hairyfred.libreshock.ble.ShockDevice
+import uk.hairyfred.libreshock.ble.formatNextAlarm
+import uk.hairyfred.libreshock.ble.nextEnabledAlarm
 import uk.hairyfred.libreshock.ui.AlarmEditScreen
 import uk.hairyfred.libreshock.ui.AlarmFiringDialog
 import uk.hairyfred.libreshock.ui.AlarmsScreen
@@ -94,6 +108,7 @@ fun AppRoot() {
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     var firingAlarmId by remember { mutableStateOf<Int?>(null) }
     var batteryPercent by remember { mutableStateOf<Int?>(null) }
+    var nextAlarmLabel by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
     val device = remember { ShockDevice(context) }
@@ -104,6 +119,15 @@ fun AppRoot() {
     remember {
         uk.hairyfred.libreshock.ble.DebugLog.enabled = prefs.getBoolean("debug_logging", false)
         Unit
+    }
+
+    suspend fun refreshNextAlarm() {
+        if (device.connectionState.value !is ConnectionState.Connected) {
+            nextAlarmLabel = null; return
+        }
+        val alarms = try { device.listAlarms() } catch (_: Exception) { emptyList() }
+        val next = nextEnabledAlarm(alarms)
+        nextAlarmLabel = next?.let { (_, fireAt) -> formatNextAlarm(fireAt) }
     }
     val rootScope = rememberCoroutineScope()
 
@@ -208,7 +232,9 @@ fun AppRoot() {
     LaunchedEffect(device) {
         device.connectionState.collect { state ->
             when (state) {
+                ConnectionState.Connected -> refreshNextAlarm()
                 ConnectionState.Lost -> {
+                    nextAlarmLabel = null
                     if (btAdapter?.isEnabled == true) {
                         snackbarHostState.showSnackbar(
                             "Lost connection — reconnecting...",
@@ -218,7 +244,10 @@ fun AppRoot() {
                     }
                     // else: BroadcastReceiver will reconnect when BT returns
                 }
-                ConnectionState.Disconnected -> batteryPercent = null
+                ConnectionState.Disconnected -> {
+                    batteryPercent = null
+                    nextAlarmLabel = null
+                }
                 else -> {}
             }
         }
@@ -249,17 +278,21 @@ fun AppRoot() {
                 title = { Text(title) },
                 navigationIcon = {
                     if (screen != "main") {
-                        TextButton(onClick = {
+                        IconButton(onClick = {
                             screen = when (screen) {
                                 "alarm_edit" -> "alarms"
                                 else -> "main"
                             }
-                        }) { Text("Back") }
+                        }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
                 actions = {
                     if (screen == "main") {
-                        TextButton(onClick = { screen = "settings" }) { Text("Settings") }
+                        IconButton(onClick = { screen = "settings" }) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        }
                     }
                 },
             )
@@ -274,6 +307,7 @@ fun AppRoot() {
             }
             "alarm_edit" -> AlarmEditScreen(device, editingAlarm, editingIndex, padding) {
                 screen = "alarms"
+                rootScope.launch { refreshNextAlarm() }
             }
             "device_info" -> DeviceInfoScreen(
                 device = device,
@@ -286,6 +320,7 @@ fun AppRoot() {
                 device = device,
                 padding = padding,
                 batteryPercent = batteryPercent,
+                nextAlarmLabel = nextAlarmLabel,
                 onOpenAlarms = { screen = "alarms" },
                 onOpenDeviceInfo = { screen = "device_info" },
                 onOpenBatteryUsage = { screen = "battery_usage" },
@@ -319,6 +354,7 @@ fun ConnectionFlow(
     device: ShockDevice,
     padding: PaddingValues,
     batteryPercent: Int?,
+    nextAlarmLabel: String?,
     onOpenAlarms: () -> Unit,
     onOpenDeviceInfo: () -> Unit,
     onOpenBatteryUsage: () -> Unit,
@@ -428,6 +464,13 @@ fun ConnectionFlow(
             status
         }
         Text(displayStatus, style = MaterialTheme.typography.bodyMedium)
+        if (isConnected && nextAlarmLabel != null) {
+            Text(
+                "Next alarm: $nextAlarmLabel",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         if (!isConnected) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -609,32 +652,76 @@ private fun ActionButtons(
     var beepIntensity by remember { mutableStateOf(50f) }
     var zapIntensity by remember { mutableStateOf(30f) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Button(onClick = onAlarms, modifier = Modifier.fillMaxWidth()) { Text("Manage alarms") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = onDeviceInfo, modifier = Modifier.weight(1f)) { Text("Device info") }
-            Button(onClick = onBatteryUsage, modifier = Modifier.weight(1f)) { Text("Battery usage") }
+            FilledTonalButton(onClick = onDeviceInfo, modifier = Modifier.weight(1f)) { Text("Device info") }
+            FilledTonalButton(onClick = onBatteryUsage, modifier = Modifier.weight(1f)) { Text("Battery usage") }
         }
-        IntensityControl("Vibrate", vibeIntensity, { vibeIntensity = it }) { onVibe(vibeIntensity.toInt()) }
-        IntensityControl("Beep", beepIntensity, { beepIntensity = it }) { onBeep(beepIntensity.toInt()) }
-        IntensityControl("Zap", zapIntensity, { zapIntensity = it }) { onZap(zapIntensity.toInt()) }
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                StimRow(
+                    label = "Vibrate",
+                    icon = Icons.Filled.Vibration,
+                    value = vibeIntensity,
+                    onValueChange = { vibeIntensity = it },
+                    onTrigger = { onVibe(vibeIntensity.toInt()) },
+                )
+                StimRow(
+                    label = "Beep",
+                    icon = Icons.AutoMirrored.Filled.VolumeUp,
+                    value = beepIntensity,
+                    onValueChange = { beepIntensity = it },
+                    onTrigger = { onBeep(beepIntensity.toInt()) },
+                )
+                StimRow(
+                    label = "Zap",
+                    icon = Icons.Filled.Bolt,
+                    value = zapIntensity,
+                    onValueChange = { zapIntensity = it },
+                    onTrigger = { onZap(zapIntensity.toInt()) },
+                )
+            }
+        }
+        TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
+            Text("Disconnect")
+        }
     }
 }
 
+/** One row per stim: label · slider · % · icon trigger button. */
 @Composable
-private fun IntensityControl(
+private fun StimRow(
     label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     value: Float,
     onValueChange: (Float) -> Unit,
     onTrigger: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text("$label — ${value.toInt()}%", style = MaterialTheme.typography.titleMedium)
-            Slider(value = value, onValueChange = onValueChange, valueRange = 0f..100f, steps = 99)
-            Button(onClick = onTrigger, modifier = Modifier.fillMaxWidth()) { Text("Trigger $label") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            modifier = Modifier.width(56.dp),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = 0f..100f,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "${value.toInt()}%",
+            modifier = Modifier.width(40.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.width(8.dp))
+        FilledIconButton(onClick = onTrigger) {
+            Icon(icon, contentDescription = "Trigger $label")
         }
     }
 }
