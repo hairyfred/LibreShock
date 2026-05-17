@@ -212,3 +212,133 @@ fun parseNotifyEvent(data: ByteArray): NotifyEvent? {
         else -> null
     }
 }
+
+/** Parse a list-alarms response into AlarmConfigs. Mirrors Python's list_alarms. */
+fun parseAlarms(raw: ByteArray): List<AlarmConfig> {
+    var pos = 0
+    // Skip the AH/length/crc header if present
+    if (raw.size >= 6 && raw[0].toInt().toChar() == 'A' && raw[1].toInt().toChar() == 'H') {
+        pos = 6
+    }
+    // Skip past the AP profile TLV if present
+    val apPos = indexOfTag(raw, "AP", pos)
+    if (apPos >= 0 && apPos + 4 <= raw.size) {
+        val apLen = u16LeAt(raw, apPos + 2)
+        pos = apPos + 4 + apLen
+    }
+
+    val alarms = mutableListOf<AlarmConfig>()
+    while (pos + 4 <= raw.size) {
+        if (raw[pos].toInt().toChar() != 'H' || raw[pos + 1].toInt().toChar() != 'A') {
+            pos++
+            continue
+        }
+        val contentLen = u16LeAt(raw, pos + 2)
+        val blockStart = pos + 4
+        val blockEnd = blockStart + contentLen
+        if (blockEnd > raw.size) break
+        parseAlarmBlock(raw, blockStart, blockEnd)?.let { alarms.add(it) }
+        pos = blockEnd
+    }
+    return alarms
+}
+
+private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? {
+    var name = "alarm"
+    var hour = 0
+    var minute = 0
+    var dayMask = 0
+    var stimulusInterval = 15
+    var snooze = true
+    var enabled = true
+    var vibeIntensity = 0
+    var beepIntensity = 0
+    var zapIntensity = 0
+    var zapCount = 1
+    var hasVibe = false
+    var hasBeep = false
+    var hasZap = false
+
+    var p = start
+    while (p + 4 <= end) {
+        val tag = String(buf, p, 2, Charsets.US_ASCII)
+        val len = u16LeAt(buf, p + 2)
+        val valStart = p + 4
+        val valEnd = valStart + len
+        if (valEnd > end) break
+
+        when (tag) {
+            "AN" -> name = String(buf, valStart, len, Charsets.UTF_8)
+            "TM" -> if (len == 4) {
+                minute = bcdToInt(buf[valStart + 1].toInt() and 0xFF)
+                hour = bcdToInt(buf[valStart + 2].toInt() and 0xFF)
+                dayMask = buf[valStart + 3].toInt() and 0x7F
+            }
+            "WI" -> if (len == 2) stimulusInterval = u16LeAt(buf, valStart)
+            "SN" -> if (len >= 1) snooze = buf[valStart].toInt() != 0
+            "AO" -> if (len >= 1) enabled = buf[valStart].toInt() != 0
+            "MH" -> findTagWithin(buf, valStart, valEnd, "MC")?.let { (vs, _) ->
+                if (vs + 2 < end) {
+                    hasVibe = true
+                    vibeIntensity = buf[vs + 2].toInt() and 0xFF
+                }
+            }
+            "PH" -> findTagWithin(buf, valStart, valEnd, "PC")?.let { (vs, _) ->
+                if (vs + 2 < end) {
+                    hasBeep = true
+                    beepIntensity = buf[vs + 2].toInt() and 0xFF
+                }
+            }
+            "ZH" -> findTagWithin(buf, valStart, valEnd, "ZC")?.let { (vs, _) ->
+                if (vs + 1 < end) {
+                    val flags = buf[vs].toInt() and 0xFF
+                    hasZap = true
+                    zapCount = (flags and 0x0F).coerceAtLeast(1)
+                    zapIntensity = buf[vs + 1].toInt() and 0xFF
+                }
+            }
+        }
+        p = valEnd
+    }
+
+    return AlarmConfig(
+        hour = hour, minute = minute, name = name,
+        weekdays = dayMask, snooze = snooze, enabled = enabled,
+        stimulusInterval = stimulusInterval,
+        vibration = if (hasVibe) AlarmAction(enabled = true, count = 5, intensity = vibeIntensity)
+                    else AlarmAction(enabled = false),
+        beep = if (hasBeep) AlarmAction(enabled = true, count = 5, intensity = beepIntensity)
+               else AlarmAction(enabled = false),
+        zap = if (hasZap) AlarmAction(enabled = true, count = zapCount, intensity = zapIntensity)
+              else AlarmAction(enabled = false),
+    )
+}
+
+private fun u16LeAt(buf: ByteArray, offset: Int): Int =
+    (buf[offset].toInt() and 0xFF) or ((buf[offset + 1].toInt() and 0xFF) shl 8)
+
+private fun indexOfTag(buf: ByteArray, tag: String, from: Int): Int {
+    val a = tag[0].code.toByte()
+    val b = tag[1].code.toByte()
+    for (i in from..buf.size - 2) {
+        if (buf[i] == a && buf[i + 1] == b) return i
+    }
+    return -1
+}
+
+/** Find a 2-char tag within [start, end) and return (value-start, value-end). */
+private fun findTagWithin(buf: ByteArray, start: Int, end: Int, tag: String): Pair<Int, Int>? {
+    val a = tag[0].code.toByte()
+    val b = tag[1].code.toByte()
+    var i = start
+    while (i + 4 <= end) {
+        if (buf[i] == a && buf[i + 1] == b) {
+            val len = u16LeAt(buf, i + 2)
+            val valStart = i + 4
+            val valEnd = valStart + len
+            if (valEnd <= end) return valStart to valEnd
+        }
+        i++
+    }
+    return null
+}

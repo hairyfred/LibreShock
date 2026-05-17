@@ -299,7 +299,7 @@ repeat, TM byte 3 = `0x80` (no day bits set).
 
 ## Development
 
-### Requirements
+### Python (libreshock.py)
 ```bash
 pip install bleak
 ```
@@ -307,8 +307,43 @@ pip install bleak
 ### Files
 | File | Purpose |
 |------|---------|
-| `libreshock.py` | Main controller library and CLI |
+| `libreshock.py` | Reference controller library + CLI (bleak-based) |
+| `parse_btsnoop.py` | btsnoop_hci.log parser for reverse engineering |
+| `scripts/extract_alarm_writes.py` | Decode alarm transactions from a btsnoop |
+| `scripts/verify_combos.py` | Byte-exact verification of protocol against captured packets |
+| `scripts/timeline.py` | Chronological dump of writes/notifications around an event |
+| `android/` | Kotlin Android app (see below) |
 | `CLAUDE.md` | Protocol documentation |
+
+### Android app (android/)
+
+Kotlin + Jetpack Compose app. Package `uk.hairyfred.libreshock`, min SDK 26.
+
+```
+android/app/src/main/java/uk/hairyfred/libreshock/
+├── MainActivity.kt           # Compose UI, screen navigation
+├── ble/
+│   ├── AlarmProtocol.kt      # Pure-Kotlin protocol port (mirrors libreshock.py)
+│   └── ShockDevice.kt        # BLE wrapper over BluetoothGatt + coroutines
+└── ui/theme/                 # Default Compose theme
+app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
+```
+
+**Current features:**
+- Scan for `Pavlok-3-*` devices, connect, instant actions (vibe/beep/zap with intensity sliders)
+- Auto-scan on app launch (toggleable in Settings)
+- Auto-reconnect to last-used device on launch (toggleable; respects manual-disconnect)
+- Settings screen: auto-scan toggle, auto-reconnect toggle, "Forget device" button
+- System back / swipe-back returns to main screen from Settings
+
+**Build/install:**
+```
+cd android
+./gradlew :app:installDebug    # builds APK and pushes to connected adb device
+./gradlew :app:testDebugUnitTest --tests "uk.hairyfred.libreshock.ble.AlarmProtocolTest"
+```
+
+The unit tests verify the Kotlin protocol output byte-matches captured vendor-app packets — same validation as `scripts/verify_combos.py` for the Python implementation.
 
 ---
 
