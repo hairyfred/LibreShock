@@ -32,33 +32,24 @@ Two interfaces:
 
 ## Python CLI
 
-Install:
-
 ```
 pip install bleak
-```
 
-Make sure the device is paired in your OS Bluetooth settings first. Then:
-
-```
-python libreshock.py help        # show all commands
-python libreshock.py vibe -i 100 -c 3
-python libreshock.py beep -i 80  -c 2
-python libreshock.py zap  -i 50
-python libreshock.py status
-
-python libreshock.py alarm --list
-python libreshock.py alarm -t 7:30 --days wed --vibe 50 --beep off --zap 30
-python libreshock.py alarm --clear
-
-python libreshock.py stop        # stops a firing alarm
-python libreshock.py snooze
-
-python libreshock.py battery
+# Show the watch's name, model, serial, firmware, clock and timezone
 python libreshock.py info
+
+# Vibrate at 100% intensity, 3 pulses
+python libreshock.py vibe -i 100 -c 3
+
+# Set a recurring 07:30 Wednesday alarm with all three stimuli
+#   --vibe 50      vibrate at 50%
+#   --beep 70      beep at 70%
+#   --zap 30       zap at 30%
+#   --interval 15  15 seconds between stimulus rounds
+python libreshock.py alarm -t 7:30 --days wed --vibe 50 --beep 70 --zap 30 --interval 15
 ```
 
-See `python libreshock.py help` for the full option list.
+Full command reference: **[docs/CLI.md](docs/CLI.md)**.
 
 ## Android app
 

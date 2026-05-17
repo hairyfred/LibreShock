@@ -679,18 +679,20 @@ class ShockDevice:
 
 
 def _parse_weekdays(days_str: str) -> int:
-    """Parse weekday string to bitmask. E.g., 'mon,tue,wed' or 'weekdays' or 'daily'"""
+    """Parse weekday string to bitmask.
+    Accepts: 'daily'/'everyday'/'all', 'weekdays'/'workdays', 'weekends'/'weekend',
+    'none' (one-shot, no repeat), or a comma list like 'mon,wed,fri'."""
     days_str = days_str.lower().strip()
 
-    # Special keywords
     if days_str in ('daily', 'everyday', 'all'):
         return Weekday.EVERYDAY
     if days_str in ('weekdays', 'workdays'):
         return Weekday.WEEKDAYS
     if days_str in ('weekends', 'weekend'):
         return Weekday.WEEKENDS
+    if days_str in ('none', 'once', 'one-shot', 'oneshot'):
+        return 0  # one-shot today; TM byte 3 = 0x80 with no day bits
 
-    # Parse individual days
     day_map = {
         'sun': Weekday.SUNDAY, 'sunday': Weekday.SUNDAY,
         'mon': Weekday.MONDAY, 'monday': Weekday.MONDAY,

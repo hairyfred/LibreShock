@@ -309,7 +309,7 @@ fun AlarmEditScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 Text("Interval between stimuli — ${interval.toInt()}s", style = MaterialTheme.typography.titleSmall)
-                Slider(value = interval, onValueChange = { interval = it }, valueRange = 5f..60f, steps = 54)
+                Slider(value = interval, onValueChange = { interval = it }, valueRange = 5f..60f)
             }
         }
 
@@ -361,10 +361,10 @@ private fun StimSection(
             if (enabled) {
                 Spacer(Modifier.height(8.dp))
                 Text("Intensity — ${intensity.toInt()}%", style = MaterialTheme.typography.titleSmall)
-                Slider(value = intensity, onValueChange = onIntensityChange, valueRange = 0f..100f, steps = 99)
+                Slider(value = intensity, onValueChange = onIntensityChange, valueRange = 0f..100f)
                 countSlider?.let {
                     Text("Count — ${it.value.toInt()}", style = MaterialTheme.typography.titleSmall)
-                    Slider(value = it.value, onValueChange = it.onChange, valueRange = it.range, steps = 13)
+                    Slider(value = it.value, onValueChange = it.onChange, valueRange = it.range)
                 }
             }
         }
