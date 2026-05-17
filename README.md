@@ -2,7 +2,7 @@
 
 > **WARNING: AI Slop Coded**
 >
-> This integration was AI slop coded. While it has been tested, do not use
+> This software was AI slop coded. While it has been tested, do not use
 > this in mission-critical situations. Use at your own risk. The code may
 > contain bugs, security issues, or unexpected behavior.
 
@@ -29,6 +29,18 @@ Two interfaces:
 - *(Android only)* Battery history graph, live connection state and
   auto-reconnect, Bluetooth-off detection with one-tap re-enable, full
   alarm CRUD UI with Material 3 TimePicker
+
+## Status
+
+Tested against:
+
+- **BLE Name Pattern**: `Pavlok-*` (e.g. `Pavlok-3-XXXX`)
+- **Manufacturer**: Behavioral Technology Group, Inc.
+- **Model**: Pavlok-S (Pavlok 3)
+- **Hardware**: 6.0.0
+- **Firmware**: 6.10.0
+
+Other Pavlok models likely share the same protocol but are untested.
 
 ## Python CLI
 
@@ -88,18 +100,6 @@ scripts/
   timeline.py                  Chronological dump of writes/notifications
 CLAUDE.md            Full reverse-engineered protocol documentation
 ```
-
-## Status
-
-Tested against:
-
-- **BLE Name Pattern**: `Pavlok-*` (e.g. `Pavlok-3-XXXX`)
-- **Manufacturer**: Behavioral Technology Group, Inc.
-- **Model**: Pavlok-S (Pavlok 3)
-- **Hardware**: 6.0.0
-- **Firmware**: 6.10.0
-
-Other Pavlok models likely share the same protocol but are untested.
 
 ## Protocol
 

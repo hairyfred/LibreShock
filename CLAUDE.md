@@ -14,6 +14,15 @@ to the Android app under `android/`. Both must stay at feature parity so users
 can pick either tool with full functionality — some prefer scripting, some
 prefer the GUI. If something exists in one, it must exist in the other.
 
+## Project rule: keep README.md and docs/CLI.md current
+
+When a feature is added, removed, or changed in a user-facing way, update
+`README.md` and `docs/CLI.md` in the same commit. README.md stays short — a
+quick-start with `# comments` explaining each example plus a link to detailed
+docs. `docs/CLI.md` is the authoritative per-command reference for the Python
+CLI; add/remove rows in the commands table and example blocks as the surface
+changes. Don't let docs and code drift.
+
 ---
 
 ## Target Device
