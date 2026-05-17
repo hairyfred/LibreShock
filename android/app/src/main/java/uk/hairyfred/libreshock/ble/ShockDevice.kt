@@ -65,6 +65,17 @@ class ShockDevice(private val context: Context) {
         // Standard battery service
         val CHAR_BATTERY: UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
 
+        // Standard Device Information Service (0x180A)
+        val CHAR_MANUFACTURER: UUID = UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
+        val CHAR_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
+        val CHAR_SERIAL: UUID = UUID.fromString("00002a25-0000-1000-8000-00805f9b34fb")
+        val CHAR_HARDWARE_REV: UUID = UUID.fromString("00002a27-0000-1000-8000-00805f9b34fb")
+        val CHAR_FIRMWARE_REV: UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+        val CHAR_SOFTWARE_REV: UUID = UUID.fromString("00002a28-0000-1000-8000-00805f9b34fb")  // timezone
+
+        // Device clock: 8-byte BCD timestamp in the action-settings service (char 1005).
+        val CHAR_TIME: UUID = UUID.fromString("00001005-0000-1000-8000-00805f9b34fb")
+
         // Client Characteristic Configuration Descriptor — same for all chars
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -157,18 +168,58 @@ class ShockDevice(private val context: Context) {
     val isConnected: Boolean get() = gatt != null
 
     /** Read the watch's battery level (0-100). Returns null if the read fails. */
+    suspend fun readBattery(): Int? =
+        readChar(CHAR_BATTERY)?.firstOrNull()?.toInt()?.and(0xFF)
+
+    /** Read all the standard DIS strings, timezone, and the BCD device clock.
+     *  Mirrors libreshock.py's read_device_info. */
+    suspend fun readDeviceInfo(deviceName: String?): DeviceInfo {
+        val manufacturer = readAscii(CHAR_MANUFACTURER)
+        val model = readAscii(CHAR_MODEL)
+        val serial = readAscii(CHAR_SERIAL)
+        val hardware = readAscii(CHAR_HARDWARE_REV)
+        val firmware = readAscii(CHAR_FIRMWARE_REV)
+        val timezoneRaw = readAscii(CHAR_SOFTWARE_REV)
+        val timezone = timezoneRaw?.let { formatTimezone(it) }
+        val timeRaw = readChar(CHAR_TIME)
+        val time = timeRaw?.let { decodeDeviceTime(it) }
+        return DeviceInfo(
+            name = deviceName,
+            manufacturer = manufacturer,
+            model = model,
+            serial = serial,
+            hardwareRevision = hardware,
+            firmwareRevision = firmware,
+            timezone = timezone,
+            date = time?.first,
+            time = time?.second,
+        )
+    }
+
+    private suspend fun readAscii(uuid: UUID): String? =
+        readChar(uuid)?.toString(Charsets.UTF_8)?.trim(' ', ' ', '\t', '\n', '\r')
+
     @SuppressLint("MissingPermission")
-    suspend fun readBattery(): Int? = gattMutex.withLock {
-        val g = gatt ?: return@withLock null
-        val char = findCharacteristic(g, CHAR_BATTERY) ?: return@withLock null
-        val value = suspendCoroutine<ByteArray?> { cont ->
+    private suspend fun readChar(uuid: UUID): ByteArray? = gattMutex.withLock {
+        val g = gatt
+        if (g == null) {
+            Log.w(TAG, "readChar($uuid): gatt is null"); return@withLock null
+        }
+        val char = findCharacteristic(g, uuid)
+        if (char == null) {
+            Log.w(TAG, "readChar($uuid): characteristic not found"); return@withLock null
+        }
+        val result = suspendCoroutine<ByteArray?> { cont ->
             readCont = cont
-            if (!g.readCharacteristic(char)) {
+            val started = g.readCharacteristic(char)
+            DebugLog.d(TAG, "readChar($uuid): readCharacteristic returned $started")
+            if (!started) {
                 readCont = null
                 cont.resume(null)
             }
         }
-        value?.firstOrNull()?.toInt()?.and(0xFF)
+        DebugLog.d(TAG, "readChar($uuid): got ${result?.size ?: -1} bytes")
+        result
     }
 
     // ---- Instant actions ----
@@ -315,7 +366,7 @@ class ShockDevice(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> g.discoverServices()
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    Log.d(TAG, "Disconnected (status=$status, intentional=$intentionalDisconnect)")
+                    DebugLog.d(TAG, "Disconnected (status=$status, intentional=$intentionalDisconnect)")
                     val wasIntentional = intentionalDisconnect
                     intentionalDisconnect = false
                     connectCont?.resume(false); connectCont = null
@@ -329,7 +380,7 @@ class ShockDevice(private val context: Context) {
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             val ok = status == BluetoothGatt.GATT_SUCCESS
-            Log.d(TAG, "Services discovered: ok=$ok, ${g.services.size} services")
+            DebugLog.d(TAG, "Services discovered: ok=$ok, ${g.services.size} services")
             connectCont?.resume(ok); connectCont = null
         }
 
@@ -348,6 +399,7 @@ class ShockDevice(private val context: Context) {
         override fun onCharacteristicRead(g: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
             @Suppress("DEPRECATION")
             val value = char.value
+            DebugLog.d(TAG, "onCharacteristicRead(legacy) ${char.uuid} status=$status size=${value?.size ?: -1}")
             readCont?.resume(if (status == BluetoothGatt.GATT_SUCCESS) value else null); readCont = null
         }
 
@@ -357,6 +409,7 @@ class ShockDevice(private val context: Context) {
             value: ByteArray,
             status: Int,
         ) {
+            DebugLog.d(TAG, "onCharacteristicRead ${char.uuid} status=$status size=${value.size}")
             readCont?.resume(if (status == BluetoothGatt.GATT_SUCCESS) value else null); readCont = null
         }
 
@@ -406,6 +459,51 @@ sealed class ConnectionState {
     object Connected : ConnectionState()
     /** Connection dropped without a call to [ShockDevice.disconnect] — candidate for auto-reconnect. */
     object Lost : ConnectionState()
+}
+
+/** Snapshot of everything ShockDevice.readDeviceInfo() returns. */
+data class DeviceInfo(
+    val name: String? = null,
+    val manufacturer: String? = null,
+    val model: String? = null,
+    val serial: String? = null,
+    val hardwareRevision: String? = null,
+    val firmwareRevision: String? = null,
+    val timezone: String? = null,
+    val date: String? = null,
+    val time: String? = null,
+)
+
+private val MONTH_NAMES = arrayOf(
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+private fun bcd(value: Byte): Int = ((value.toInt() and 0xF0) shr 4) * 10 + (value.toInt() and 0x0F)
+
+/** Decode the 8-byte BCD device clock to (date, time) strings, mirroring libreshock.py. */
+internal fun decodeDeviceTime(buf: ByteArray): Pair<String, String>? {
+    if (buf.size < 8) return null
+    val sec = bcd(buf[0])
+    val minute = bcd(buf[1])
+    val hour = bcd(buf[2])
+    val day = bcd(buf[3])
+    val month = bcd(buf[5])
+    val year = 2000 + bcd(buf[6])
+    val monthName = MONTH_NAMES.getOrNull(month - 1) ?: "M$month"
+    return "$monthName $day $year" to "%02d:%02d:%02d".format(hour, minute, sec)
+}
+
+/** "+100" → "UTC +1:00", "-0530" → "UTC -5:30". */
+internal fun formatTimezone(raw: String): String {
+    if (raw.isEmpty()) return raw
+    val sign = if (raw.startsWith("-")) "-" else "+"
+    val digits = raw.trimStart('+', '-')
+    if (!digits.all { it.isDigit() }) return raw
+    val padded = digits.padStart(3, '0')
+    val minutes = padded.takeLast(2)
+    val hours = padded.dropLast(2).trimStart('0').ifEmpty { "0" }
+    return "UTC $sign$hours:$minutes"
 }
 
 private val SUCCESS_RESP_A = byteArrayOf(0, 0, 0, 0)

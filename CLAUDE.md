@@ -380,6 +380,9 @@ app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
 - Time entry uses Material 3 TimePicker (clock dial) in a dialog opened by tapping the time card
 - Fire/stop/snooze: when the watch fires an alarm (0x54 notification on char 5003), an in-app dialog pops up with Stop and Snooze buttons. Dialog auto-dismisses if the user stops/snoozes on the watch directly (0x55/0x56 confirmation). In-app only — won't show if the app isn't running.
 - System back / swipe-back navigates back through screens (alarm-edit → alarms → main)
+- **Device info** screen: reads BLE name, manufacturer, model, serial, firmware/hardware revisions, timezone, device clock (mirrors the vendor app's Device Info screen)
+- **Battery usage** screen: current %, "last charged" approximation, line graph of historical samples. Samples are recorded each time the screen is opened; persisted to a private CSV file in app storage (`battery_history.csv`).
+- **Debug logging** toggle in Settings: turns on verbose BLE read/write logcat traces via `DebugLog.d(...)` calls inside `ShockDevice.kt`. Off by default; persisted across launches. View via `adb logcat -s ShockDevice`.
 
 **Build/install:**
 ```

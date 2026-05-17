@@ -52,11 +52,14 @@ import androidx.core.content.edit
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import uk.hairyfred.libreshock.ble.AlarmConfig
+import uk.hairyfred.libreshock.ble.BatteryHistory
 import uk.hairyfred.libreshock.ble.NotifyOpcode
 import uk.hairyfred.libreshock.ble.ShockDevice
 import uk.hairyfred.libreshock.ui.AlarmEditScreen
 import uk.hairyfred.libreshock.ui.AlarmFiringDialog
 import uk.hairyfred.libreshock.ui.AlarmsScreen
+import uk.hairyfred.libreshock.ui.BatteryUsageScreen
+import uk.hairyfred.libreshock.ui.DeviceInfoScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
 
 class MainActivity : ComponentActivity() {
@@ -81,6 +84,13 @@ fun AppRoot() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
     val device = remember { ShockDevice(context) }
+    val batteryHistory = remember { BatteryHistory(context) }
+
+    // Apply persisted debug-logging preference at start.
+    remember {
+        uk.hairyfred.libreshock.ble.DebugLog.enabled = prefs.getBoolean("debug_logging", false)
+        Unit
+    }
     val rootScope = rememberCoroutineScope()
 
     // Listen for alarm-fire / stop / snooze notifications from the watch.
@@ -97,12 +107,17 @@ fun AppRoot() {
         "settings" -> "Settings"
         "alarms" -> "Alarms"
         "alarm_edit" -> if (editingIndex == null) "New alarm" else "Edit alarm"
+        "device_info" -> "Device info"
+        "battery_usage" -> "Battery usage"
         else -> "LibreShock"
     }
 
     // System back / swipe-back: alarm_edit → alarms, anything else → main
     BackHandler(enabled = screen != "main") {
-        screen = if (screen == "alarm_edit") "alarms" else "main"
+        screen = when (screen) {
+            "alarm_edit" -> "alarms"
+            else -> "main"
+        }
     }
 
     Scaffold(
@@ -113,7 +128,10 @@ fun AppRoot() {
                 navigationIcon = {
                     if (screen != "main") {
                         TextButton(onClick = {
-                            screen = if (screen == "alarm_edit") "alarms" else "main"
+                            screen = when (screen) {
+                                "alarm_edit" -> "alarms"
+                                else -> "main"
+                            }
                         }) { Text("Back") }
                     }
                 },
@@ -135,7 +153,20 @@ fun AppRoot() {
             "alarm_edit" -> AlarmEditScreen(device, editingAlarm, editingIndex, padding) {
                 screen = "alarms"
             }
-            else -> ConnectionFlow(prefs, device, padding, onOpenAlarms = { screen = "alarms" })
+            "device_info" -> DeviceInfoScreen(
+                device = device,
+                deviceName = prefs.getString("last_name", null),
+                padding = padding,
+            )
+            "battery_usage" -> BatteryUsageScreen(device, batteryHistory, padding)
+            else -> ConnectionFlow(
+                prefs = prefs,
+                device = device,
+                padding = padding,
+                onOpenAlarms = { screen = "alarms" },
+                onOpenDeviceInfo = { screen = "device_info" },
+                onOpenBatteryUsage = { screen = "battery_usage" },
+            )
         }
     }
 
@@ -165,6 +196,8 @@ fun ConnectionFlow(
     device: ShockDevice,
     padding: PaddingValues,
     onOpenAlarms: () -> Unit,
+    onOpenDeviceInfo: () -> Unit,
+    onOpenBatteryUsage: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -304,6 +337,8 @@ fun ConnectionFlow(
                     val ok = device.zap(intensity = i); status = if (ok) "Zap sent" else "Zap failed"
                 } },
                 onAlarms = onOpenAlarms,
+                onDeviceInfo = onOpenDeviceInfo,
+                onBatteryUsage = onOpenBatteryUsage,
                 onDisconnect = {
                     device.disconnect()
                     isConnected = false
@@ -320,6 +355,7 @@ fun ConnectionFlow(
 private fun SettingsScreen(prefs: SharedPreferences, padding: PaddingValues) {
     var autoScan by remember { mutableStateOf(prefs.getBoolean("auto_scan", true)) }
     var autoConnect by remember { mutableStateOf(prefs.getBoolean("auto_connect", true)) }
+    var debugLogging by remember { mutableStateOf(prefs.getBoolean("debug_logging", false)) }
     val lastName = prefs.getString("last_name", null)
     val lastMac = prefs.getString("last_mac", null)
 
@@ -346,6 +382,16 @@ private fun SettingsScreen(prefs: SharedPreferences, padding: PaddingValues) {
             onCheckedChange = {
                 autoConnect = it
                 prefs.edit { putBoolean("auto_connect", it) }
+            },
+        )
+        SettingRow(
+            label = "Enable debug logging",
+            description = "Write verbose BLE read/write traces to logcat. View via `adb logcat -s ShockDevice`. Off by default.",
+            checked = debugLogging,
+            onCheckedChange = {
+                debugLogging = it
+                prefs.edit { putBoolean("debug_logging", it) }
+                uk.hairyfred.libreshock.ble.DebugLog.enabled = it
             },
         )
 
@@ -416,6 +462,8 @@ private fun ActionButtons(
     onBeep: (Int) -> Unit,
     onZap: (Int) -> Unit,
     onAlarms: () -> Unit,
+    onDeviceInfo: () -> Unit,
+    onBatteryUsage: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     var vibeIntensity by remember { mutableStateOf(50f) }
@@ -424,6 +472,10 @@ private fun ActionButtons(
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Button(onClick = onAlarms, modifier = Modifier.fillMaxWidth()) { Text("Manage alarms") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onDeviceInfo, modifier = Modifier.weight(1f)) { Text("Device info") }
+            Button(onClick = onBatteryUsage, modifier = Modifier.weight(1f)) { Text("Battery usage") }
+        }
         IntensityControl("Vibrate", vibeIntensity, { vibeIntensity = it }) { onVibe(vibeIntensity.toInt()) }
         IntensityControl("Beep", beepIntensity, { beepIntensity = it }) { onBeep(beepIntensity.toInt()) }
         IntensityControl("Zap", zapIntensity, { zapIntensity = it }) { onZap(zapIntensity.toInt()) }
