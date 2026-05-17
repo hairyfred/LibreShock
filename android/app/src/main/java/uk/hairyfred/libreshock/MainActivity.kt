@@ -51,7 +51,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
+import uk.hairyfred.libreshock.ble.AlarmConfig
 import uk.hairyfred.libreshock.ble.ShockDevice
+import uk.hairyfred.libreshock.ui.AlarmEditScreen
+import uk.hairyfred.libreshock.ui.AlarmsScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
 
 class MainActivity : ComponentActivity() {
@@ -70,21 +73,34 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppRoot() {
     var screen by remember { mutableStateOf("main") }
+    var editingAlarm by remember { mutableStateOf<AlarmConfig?>(null) }
+    var editingIndex by remember { mutableStateOf<Int?>(null) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
     val device = remember { ShockDevice(context) }
 
-    // System back / swipe-back returns to main from any non-main screen.
-    BackHandler(enabled = screen != "main") { screen = "main" }
+    val title = when (screen) {
+        "settings" -> "Settings"
+        "alarms" -> "Alarms"
+        "alarm_edit" -> if (editingIndex == null) "New alarm" else "Edit alarm"
+        else -> "LibreShock"
+    }
+
+    // System back / swipe-back: alarm_edit → alarms, anything else → main
+    BackHandler(enabled = screen != "main") {
+        screen = if (screen == "alarm_edit") "alarms" else "main"
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text(if (screen == "settings") "Settings" else "LibreShock") },
+                title = { Text(title) },
                 navigationIcon = {
-                    if (screen == "settings") {
-                        TextButton(onClick = { screen = "main" }) { Text("Back") }
+                    if (screen != "main") {
+                        TextButton(onClick = {
+                            screen = if (screen == "alarm_edit") "alarms" else "main"
+                        }) { Text("Back") }
                     }
                 },
                 actions = {
@@ -97,14 +113,27 @@ fun AppRoot() {
     ) { padding ->
         when (screen) {
             "settings" -> SettingsScreen(prefs, padding)
-            else -> ConnectionFlow(prefs, device, padding)
+            "alarms" -> AlarmsScreen(device, padding) { alarm, index ->
+                editingAlarm = alarm
+                editingIndex = index
+                screen = "alarm_edit"
+            }
+            "alarm_edit" -> AlarmEditScreen(device, editingAlarm, editingIndex, padding) {
+                screen = "alarms"
+            }
+            else -> ConnectionFlow(prefs, device, padding, onOpenAlarms = { screen = "alarms" })
         }
     }
 }
 
 @SuppressLint("MissingPermission")
 @Composable
-fun ConnectionFlow(prefs: SharedPreferences, device: ShockDevice, padding: PaddingValues) {
+fun ConnectionFlow(
+    prefs: SharedPreferences,
+    device: ShockDevice,
+    padding: PaddingValues,
+    onOpenAlarms: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -242,6 +271,7 @@ fun ConnectionFlow(prefs: SharedPreferences, device: ShockDevice, padding: Paddi
                 onZap = { i -> scope.launch {
                     val ok = device.zap(intensity = i); status = if (ok) "Zap sent" else "Zap failed"
                 } },
+                onAlarms = onOpenAlarms,
                 onDisconnect = {
                     device.disconnect()
                     isConnected = false
@@ -353,6 +383,7 @@ private fun ActionButtons(
     onVibe: (Int) -> Unit,
     onBeep: (Int) -> Unit,
     onZap: (Int) -> Unit,
+    onAlarms: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     var vibeIntensity by remember { mutableStateOf(50f) }
@@ -360,6 +391,7 @@ private fun ActionButtons(
     var zapIntensity by remember { mutableStateOf(30f) }
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Button(onClick = onAlarms, modifier = Modifier.fillMaxWidth()) { Text("Manage alarms") }
         IntensityControl("Vibrate", vibeIntensity, { vibeIntensity = it }) { onVibe(vibeIntensity.toInt()) }
         IntensityControl("Beep", beepIntensity, { beepIntensity = it }) { onBeep(beepIntensity.toInt()) }
         IntensityControl("Zap", zapIntensity, { zapIntensity = it }) { onZap(zapIntensity.toInt()) }

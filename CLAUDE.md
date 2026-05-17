@@ -334,7 +334,8 @@ app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
 - Auto-scan on app launch (toggleable in Settings)
 - Auto-reconnect to last-used device on launch (toggleable; respects manual-disconnect)
 - Settings screen: auto-scan toggle, auto-reconnect toggle, "Forget device" button
-- System back / swipe-back returns to main screen from Settings
+- Alarm CRUD: list device alarms, add/edit/delete with time, repeat days, per-stim toggles + intensity, zap count, snooze, stimulus interval
+- System back / swipe-back navigates back through screens (alarm-edit → alarms → main)
 
 **Build/install:**
 ```
