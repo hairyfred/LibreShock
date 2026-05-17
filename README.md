@@ -40,7 +40,7 @@ Tested against:
 - **Hardware**: 6.0.0
 - **Firmware**: 6.10.0
 
-Other Pavlok models likely share the same protocol but are untested.
+Other Pavlok models likely share the same protocol but are untested. (I do not own any other Pavlok device, if there are issues please create an issue with logs and I will try my best to support it)
 
 ## Python CLI
 
