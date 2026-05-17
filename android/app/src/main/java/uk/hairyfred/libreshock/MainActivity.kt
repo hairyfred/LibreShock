@@ -52,8 +52,10 @@ import androidx.core.content.edit
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import uk.hairyfred.libreshock.ble.AlarmConfig
+import uk.hairyfred.libreshock.ble.NotifyOpcode
 import uk.hairyfred.libreshock.ble.ShockDevice
 import uk.hairyfred.libreshock.ui.AlarmEditScreen
+import uk.hairyfred.libreshock.ui.AlarmFiringDialog
 import uk.hairyfred.libreshock.ui.AlarmsScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
 
@@ -75,9 +77,21 @@ fun AppRoot() {
     var screen by remember { mutableStateOf("main") }
     var editingAlarm by remember { mutableStateOf<AlarmConfig?>(null) }
     var editingIndex by remember { mutableStateOf<Int?>(null) }
+    var firingAlarmId by remember { mutableStateOf<Int?>(null) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
     val device = remember { ShockDevice(context) }
+    val rootScope = rememberCoroutineScope()
+
+    // Listen for alarm-fire / stop / snooze notifications from the watch.
+    LaunchedEffect(device) {
+        device.alarmEvents.collect { event ->
+            when (event.opcode) {
+                NotifyOpcode.ALARM_FIRING -> firingAlarmId = event.alarmId
+                NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> firingAlarmId = null
+            }
+        }
+    }
 
     val title = when (screen) {
         "settings" -> "Settings"
@@ -123,6 +137,24 @@ fun AppRoot() {
             }
             else -> ConnectionFlow(prefs, device, padding, onOpenAlarms = { screen = "alarms" })
         }
+    }
+
+    firingAlarmId?.let { id ->
+        AlarmFiringDialog(
+            alarmId = id,
+            onStop = {
+                rootScope.launch {
+                    device.stopAlarm()
+                    firingAlarmId = null
+                }
+            },
+            onSnooze = {
+                rootScope.launch {
+                    device.snoozeAlarm()
+                    firingAlarmId = null
+                }
+            },
+        )
     }
 }
 

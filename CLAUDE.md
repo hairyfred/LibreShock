@@ -335,6 +335,8 @@ app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
 - Auto-reconnect to last-used device on launch (toggleable; respects manual-disconnect)
 - Settings screen: auto-scan toggle, auto-reconnect toggle, "Forget device" button
 - Alarm CRUD: list device alarms, add/edit/delete with time, repeat days, per-stim toggles + intensity, zap count, snooze, stimulus interval
+- Time entry uses Material 3 TimePicker (clock dial) in a dialog opened by tapping the time card
+- Fire/stop/snooze: when the watch fires an alarm (0x54 notification on char 5003), an in-app dialog pops up with Stop and Snooze buttons. Dialog auto-dismisses if the user stops/snoozes on the watch directly (0x55/0x56 confirmation). In-app only — won't show if the app isn't running.
 - System back / swipe-back navigates back through screens (alarm-edit → alarms → main)
 
 **Build/install:**
