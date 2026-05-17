@@ -382,6 +382,9 @@ app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
 - System back / swipe-back navigates back through screens (alarm-edit → alarms → main)
 - **Device info** screen: reads BLE name, manufacturer, model, serial, firmware/hardware revisions, timezone, device clock (mirrors the vendor app's Device Info screen)
 - **Battery usage** screen: current %, "last charged" approximation, line graph of historical samples. Samples are recorded each time the screen is opened; persisted to a private CSV file in app storage (`battery_history.csv`).
+- **Live battery %** inline with the connection status, e.g. "Connected to Pavlok-3-XXXX  •  Battery 26%". Updates in real time via watch battery notifications (CCCD subscription on `0x2A19`).
+- **Bluetooth-off detection**: a `BluetoothAdapter.ACTION_STATE_CHANGED` receiver surfaces a persistent "Bluetooth is off" snackbar with a "Turn on" action that opens the system enable-BT prompt. The snackbar auto-dismisses when BT comes back on.
+- **Auto-reconnect**: when the watch disconnects unexpectedly (Out of range / BT toggled / etc.) the app attempts to reconnect to the last-known MAC. Distinguishes intentional disconnects (user tapped the Disconnect button) from lost connections via an `intentionalDisconnect` flag inside `ShockDevice`. Reconnect kicks in either immediately (BT still on) or when BT comes back on (BT-state receiver).
 - **Debug logging** toggle in Settings: turns on verbose BLE read/write logcat traces via `DebugLog.d(...)` calls inside `ShockDevice.kt`. Off by default; persisted across launches. View via `adb logcat -s ShockDevice`.
 
 **Build/install:**

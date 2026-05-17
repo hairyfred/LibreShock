@@ -106,6 +106,11 @@ class ShockDevice(private val context: Context) {
     /** Persistent stream of alarm-fire / stop / snooze events from the watch. */
     val alarmEvents: SharedFlow<NotifyEvent> = _alarmEvents.asSharedFlow()
 
+    private val _batteryUpdates = MutableSharedFlow<Int>(replay = 1, extraBufferCapacity = 8)
+    /** Battery percentage emitted whenever the watch sends a battery notification
+     *  or [readBattery] succeeds. Replays the most recent value to new subscribers. */
+    val batteryUpdates: SharedFlow<Int> = _batteryUpdates.asSharedFlow()
+
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
@@ -168,8 +173,11 @@ class ShockDevice(private val context: Context) {
     val isConnected: Boolean get() = gatt != null
 
     /** Read the watch's battery level (0-100). Returns null if the read fails. */
-    suspend fun readBattery(): Int? =
-        readChar(CHAR_BATTERY)?.firstOrNull()?.toInt()?.and(0xFF)
+    suspend fun readBattery(): Int? {
+        val pct = readChar(CHAR_BATTERY)?.firstOrNull()?.toInt()?.and(0xFF)
+        if (pct != null) _batteryUpdates.tryEmit(pct)
+        return pct
+    }
 
     /** Read all the standard DIS strings, timezone, and the BCD device clock.
      *  Mirrors libreshock.py's read_device_info. */
@@ -301,7 +309,7 @@ class ShockDevice(private val context: Context) {
 
     private suspend fun setupNotifications(): Boolean {
         val g = gatt ?: return false
-        for (uuid in listOf(CHAR_DATA, CHAR_CTRL, CHAR_NOTIFY)) {
+        for (uuid in listOf(CHAR_DATA, CHAR_CTRL, CHAR_NOTIFY, CHAR_BATTERY)) {
             val char = findCharacteristic(g, uuid)
             if (char == null) {
                 Log.e(TAG, "Char $uuid not found for notification setup")
@@ -434,6 +442,9 @@ class ShockDevice(private val context: Context) {
             CHAR_DATA -> dataNotifs.trySend(value)
             CHAR_CTRL -> ctrlNotifs.trySend(value)
             CHAR_NOTIFY -> parseNotifyEvent(value)?.let { _alarmEvents.tryEmit(it) }
+            CHAR_BATTERY -> value.firstOrNull()?.let {
+                _batteryUpdates.tryEmit(it.toInt() and 0xFF)
+            }
         }
     }
 

@@ -1,10 +1,14 @@
 package uk.hairyfred.libreshock
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanResult
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -28,14 +32,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -49,10 +58,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import uk.hairyfred.libreshock.ble.AlarmConfig
 import uk.hairyfred.libreshock.ble.BatteryHistory
+import uk.hairyfred.libreshock.ble.ConnectionState
 import uk.hairyfred.libreshock.ble.NotifyOpcode
 import uk.hairyfred.libreshock.ble.ShockDevice
 import uk.hairyfred.libreshock.ui.AlarmEditScreen
@@ -81,10 +93,12 @@ fun AppRoot() {
     var editingAlarm by remember { mutableStateOf<AlarmConfig?>(null) }
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     var firingAlarmId by remember { mutableStateOf<Int?>(null) }
+    var batteryPercent by remember { mutableStateOf<Int?>(null) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
     val device = remember { ShockDevice(context) }
     val batteryHistory = remember { BatteryHistory(context) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     // Apply persisted debug-logging preference at start.
     remember {
@@ -99,6 +113,113 @@ fun AppRoot() {
             when (event.opcode) {
                 NotifyOpcode.ALARM_FIRING -> firingAlarmId = event.alarmId
                 NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> firingAlarmId = null
+            }
+        }
+    }
+
+    // Battery notifications + on-connect read both feed batteryUpdates;
+    // mirror to the top-bar state and append to local history.
+    LaunchedEffect(device) {
+        device.batteryUpdates.collect { pct ->
+            batteryPercent = pct
+            batteryHistory.append(pct)
+        }
+    }
+
+    val btAdapter = remember {
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    }
+    val enableBtLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* outcome surfaced via BT state broadcast */ }
+
+    // Tracks the currently-displayed "Bluetooth is off" snackbar so we can
+    // dismiss it the moment BT comes back on.
+    var btOffSnackbarJob by remember { mutableStateOf<Job?>(null) }
+
+    suspend fun tryReconnect(reason: String): Boolean {
+        val lastMac = prefs.getString("last_mac", null) ?: return false
+        if (prefs.getBoolean("user_disconnected", false)) return false
+        if (device.connectionState.value is ConnectionState.Connected) return true
+        val lastName = prefs.getString("last_name", null) ?: "device"
+        // Give the BLE stack a moment to settle after a state change.
+        delay(800)
+        val ok = try { device.connectByAddress(lastMac) } catch (_: Exception) { false }
+        snackbarHostState.showSnackbar(
+            if (ok) "Reconnected to $lastName" else "Could not reconnect — tap Scan",
+            duration = SnackbarDuration.Short,
+        )
+        if (ok) try { device.readBattery() } catch (_: Exception) {}
+        return ok
+    }
+
+    // The BroadcastReceiver is the single source of truth for BT-state messages.
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                when (state) {
+                    BluetoothAdapter.STATE_OFF -> {
+                        btOffSnackbarJob?.cancel()
+                        btOffSnackbarJob = rootScope.launch {
+                            val result = snackbarHostState.showSnackbar(
+                                message = "Bluetooth is off",
+                                actionLabel = "Turn on",
+                                duration = SnackbarDuration.Indefinite,
+                            )
+                            if (result == SnackbarResult.ActionPerformed) {
+                                enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                            }
+                        }
+                    }
+                    BluetoothAdapter.STATE_ON -> {
+                        btOffSnackbarJob?.cancel()
+                        btOffSnackbarJob = null
+                        rootScope.launch { tryReconnect("BT enabled") }
+                    }
+                }
+            }
+        }
+        context.registerReceiver(receiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        onDispose { try { context.unregisterReceiver(receiver) } catch (_: Exception) {} }
+    }
+
+    // On launch, if BT is off, surface the enable-Bluetooth prompt up front.
+    LaunchedEffect(Unit) {
+        if (btAdapter?.isEnabled == false) {
+            btOffSnackbarJob?.cancel()
+            btOffSnackbarJob = rootScope.launch {
+                val result = snackbarHostState.showSnackbar(
+                    message = "Bluetooth is off",
+                    actionLabel = "Turn on",
+                    duration = SnackbarDuration.Indefinite,
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                }
+            }
+        }
+    }
+
+    // When the watch drops out from under us while BT is on (e.g. out of range
+    // or watch reboot), try to reconnect. If BT is off we let the broadcast
+    // receiver above handle it once BT comes back.
+    LaunchedEffect(device) {
+        device.connectionState.collect { state ->
+            when (state) {
+                ConnectionState.Lost -> {
+                    if (btAdapter?.isEnabled == true) {
+                        snackbarHostState.showSnackbar(
+                            "Lost connection — reconnecting...",
+                            duration = SnackbarDuration.Short,
+                        )
+                        tryReconnect("lost while BT on")
+                    }
+                    // else: BroadcastReceiver will reconnect when BT returns
+                }
+                ConnectionState.Disconnected -> batteryPercent = null
+                else -> {}
             }
         }
     }
@@ -122,6 +243,7 @@ fun AppRoot() {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(title) },
@@ -163,6 +285,7 @@ fun AppRoot() {
                 prefs = prefs,
                 device = device,
                 padding = padding,
+                batteryPercent = batteryPercent,
                 onOpenAlarms = { screen = "alarms" },
                 onOpenDeviceInfo = { screen = "device_info" },
                 onOpenBatteryUsage = { screen = "battery_usage" },
@@ -195,6 +318,7 @@ fun ConnectionFlow(
     prefs: SharedPreferences,
     device: ShockDevice,
     padding: PaddingValues,
+    batteryPercent: Int?,
     onOpenAlarms: () -> Unit,
     onOpenDeviceInfo: () -> Unit,
     onOpenBatteryUsage: () -> Unit,
@@ -208,6 +332,14 @@ fun ConnectionFlow(
     var connectingName by remember { mutableStateOf<String?>(null) }
     val foundDevices = remember { mutableStateListOf<ScanResult>() }
     var status by remember { mutableStateOf("Starting...") }
+
+    // Keep isConnected in sync with the device's StateFlow (e.g., when auto-reconnect
+    // finishes from outside this composable, or the watch drops the connection).
+    LaunchedEffect(device) {
+        device.connectionState.collect { state ->
+            isConnected = state is ConnectionState.Connected
+        }
+    }
 
     suspend fun runScan() {
         if (!permissionsGranted) return
@@ -240,6 +372,8 @@ fun ConnectionFlow(
                 putString("last_name", displayName)
                 putBoolean("user_disconnected", false)
             }
+            // Read battery once after connecting; subsequent updates arrive via notifications.
+            try { device.readBattery() } catch (_: Exception) {}
         } else {
             status = "Failed to connect to $displayName"
         }
@@ -288,7 +422,12 @@ fun ConnectionFlow(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(status, style = MaterialTheme.typography.bodyMedium)
+        val displayStatus = if (isConnected && batteryPercent != null) {
+            "$status  •  Battery $batteryPercent%"
+        } else {
+            status
+        }
+        Text(displayStatus, style = MaterialTheme.typography.bodyMedium)
 
         if (!isConnected) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
