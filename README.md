@@ -116,3 +116,13 @@ CLAUDE.md            Full reverse-engineered protocol documentation
 The BLE protocol — services, characteristics, alarm packet format, day-mask
 encoding, CRC algorithm, fire/stop/snooze commands — is fully documented
 in [CLAUDE.md](CLAUDE.md). That file is the canonical reference.
+
+## Disclaimer
+
+This is an **unofficial project**. LibreShock is not affiliated with,
+endorsed by, sponsored by, or in any way officially connected to Behavioral
+Technology Group, Inc. or Pavlok. "Pavlok" and any related product names are
+trademarks of their respective owners and are used here solely to identify
+the hardware this project targets. The protocol implemented here was
+reverse-engineered from publicly observable Bluetooth LE traffic for personal
+interoperability purposes.
