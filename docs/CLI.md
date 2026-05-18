@@ -28,6 +28,8 @@ each run, so no address needs to be passed.
 | `battery` | Show the watch's battery percentage |
 | `info` | Show device info (name, model, serial, firmware, clock, timezone) |
 | `sleep` | Enable/disable automatic sleep tracking (`--on` / `--off`) |
+| `handraise` | Configure hand-raise detection (`--on`/`--off`, `--hand`, `--wrist`, `--stim`) |
+| `button` | Rebind one of the 6 hardware-button slots (`--slot`, `--act`) |
 | `status` | Show the raw vibe / beep / zap / LED config currently stored on the device |
 | `help` | Print full help with all options |
 
@@ -100,6 +102,40 @@ python libreshock.py info      # name, manufacturer, model, serial,
                                # firmware/hardware, on-device clock, timezone
 python libreshock.py status    # current vibe/beep/zap/LED raw config bytes
 ```
+
+## Hardware button rebinding
+
+The watch has three physical buttons (top / middle / lower), each with a
+short-press and a long-press action — six slots total. Any slot can be
+bound to a stimulus or a built-in app toggle.
+
+```
+# Top short press triggers two vibrates
+python libreshock.py button --slot top-short --act vibrate -c 2
+
+# Top long press triggers three beeps at 75% intensity
+python libreshock.py button --slot top-long --act beep -c 3 -i 75
+
+# Middle short press triggers four zaps at 70%
+python libreshock.py button --slot mid-short --act zap -c 4 -i 70
+
+# Disable the middle long press
+python libreshock.py button --slot mid-long --act disabled
+
+# Lower short toggles the device's built-in stopwatch app
+python libreshock.py button --slot lower-short --act stopwatch
+
+# Lower long toggles sleep tracking
+python libreshock.py button --slot lower-long --act sleep
+```
+
+Flags:
+
+- `--slot top-short|top-long|mid-short|mid-long|lower-short|lower-long`
+  (aliases: `middle-` and `bottom-`)
+- `--act vibrate|beep|zap|stopwatch|timer|sleep|disabled`
+- `-c, --count N` — repetition count 1-15 (vibrate / beep / zap only)
+- `-i, --intensity N` — 0-100 (vibrate / beep / zap only)
 
 ## Hand-raise detection
 

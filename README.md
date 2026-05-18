@@ -21,14 +21,21 @@ Two interfaces:
 ## Features
 
 - Trigger vibrate / beep / zap (with adjustable intensity)
-- Manage alarms: list, create, edit, delete, per-day repeat schedules
+- Manage alarms: list, create, edit, enable/disable, delete, per-day repeats
 - Stop or snooze a currently-firing alarm from the phone / desktop
+- Configure hand-raise detection: enable, wrist hand/position, stimulus
+  (vibrate / beep / zap / countdown), zap intensity
+- Rebind the watch's 3 hardware buttons: short + long press for each can
+  trigger a stim (with repetition + intensity), toggle the built-in
+  stopwatch / timer apps, toggle sleep tracking, or be disabled
+- Enable / disable automatic sleep tracking
 - Read battery level
 - Read device info: name, manufacturer, model, serial, firmware / hardware
   revisions, on-device clock, timezone
 - *(Android only)* Battery history graph, live connection state and
   auto-reconnect, Bluetooth-off detection with one-tap re-enable, full
-  alarm CRUD UI with Material 3 TimePicker
+  alarm CRUD UI with Material 3 TimePicker, in-app alarm-fire dialog
+  with Stop / Snooze
 
 ## Status
 

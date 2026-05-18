@@ -86,6 +86,33 @@ CHAR_DATA = "00005002-0000-1000-8000-00805f9b34fb"
 # so we compute its handle from the characteristic at runtime.
 CHAR_SLEEP_TRACKING = "00000008-0000-1000-8000-00805f9b34fb"
 
+# Watch hardware button rebinding (service 156e7000, char 7001).
+# Each of the 3 physical buttons has 2 press modes (short + long) = 6 slots:
+#   slot 1 = top short    slot 4 = top long
+#   slot 2 = middle short slot 5 = middle long
+#   slot 3 = lower short  slot 6 = lower long
+# Payload format: [0x02, slot, action_class, ...action_params]
+# Action classes seen so far:
+#   0x01 = vibrate   params [0x40|count, 0x0c, intensity, 0x16, 0x16]
+#   0x02 = beep      params [0x40|count, 0x0c, intensity, 0x16, 0x16]
+#   0x03 = zap       params [0x40|count, intensity]
+#   0x11 = app toggle  params [0x02, 0x10, app_id] (app_id 1=stopwatch, 2=timer)
+#   0x13 = sleep tracking toggle  params [0x01, 0x02]
+#   0xff = disabled (no params)
+CHAR_BUTTON_CONFIG = "00007001-0000-1000-8000-00805f9b34fb"
+
+BUTTON_SLOTS = {
+    "top-short": 1, "top-long": 4,
+    "mid-short": 2, "mid-long": 5,
+    "lower-short": 3, "lower-long": 6,
+    # aliases
+    "middle-short": 2, "middle-long": 5,
+    "bottom-short": 3, "bottom-long": 6,
+}
+
+BUTTON_ACTIONS = ("vibrate", "vibe", "beep", "zap", "shock",
+                  "stopwatch", "timer", "sleep", "disabled", "off")
+
 # Hand-raise detection (service 156e1000, char 1006, user description "HD").
 # 4-byte payload: [flags, 0x70, stim_type, intensity].
 #   flags bit 0 = enabled, bits 1+2 always set, bit 3 = inside wrist,
@@ -412,6 +439,63 @@ class ShockDevice:
             except:
                 configs[name] = None
         return configs
+
+    async def set_button(
+        self,
+        slot: str,
+        action: str,
+        count: int = 1,
+        intensity: int = 50,
+    ) -> bool:
+        """Bind one of the watch's 6 button slots (3 buttons x 2 press modes)
+        to a stimulus or built-in app action.
+
+        Slot is one of: top-short, top-long, mid-short, mid-long,
+        lower-short, lower-long (with middle-/bottom- aliases).
+
+        Action is one of: vibrate, beep, zap, stopwatch, timer, sleep, disabled.
+        `count` (1-15) applies only to vibrate/beep/zap.
+        `intensity` (0-100) applies only to vibrate/beep/zap.
+        """
+        slot_id = BUTTON_SLOTS.get(slot.lower())
+        if slot_id is None:
+            print(f"Unknown slot '{slot}'. Use one of: {', '.join(sorted(set(BUTTON_SLOTS)))}")
+            return False
+        action_l = action.lower()
+        if action_l not in BUTTON_ACTIONS:
+            print(f"Unknown action '{action}'. Use one of: {', '.join(BUTTON_ACTIONS)}")
+            return False
+
+        count_byte = 0x40 | max(1, min(15, int(count)))
+        i = max(0, min(100, int(intensity)))
+        params: bytes
+        if action_l in ("vibrate", "vibe"):
+            params = bytes([0x01, count_byte, 0x0c, i, 0x16, 0x16])
+        elif action_l == "beep":
+            params = bytes([0x02, count_byte, 0x0c, i, 0x16, 0x16])
+        elif action_l in ("zap", "shock"):
+            params = bytes([0x03, count_byte, i])
+        elif action_l == "stopwatch":
+            params = bytes([0x11, 0x02, 0x10, 0x01])
+        elif action_l == "timer":
+            params = bytes([0x11, 0x02, 0x10, 0x02])
+        elif action_l == "sleep":
+            params = bytes([0x13, 0x01, 0x02])
+        elif action_l in ("disabled", "off"):
+            params = bytes([0xff])
+        else:
+            print(f"Unhandled action '{action_l}'")
+            return False
+
+        payload = bytes([0x02, slot_id]) + params
+        try:
+            await self.client.write_gatt_char(CHAR_BUTTON_CONFIG, payload, response=True)
+            print(f"Bound {slot} -> {action_l}"
+                  + (f" x{count} @ {i}%" if action_l in ('vibrate', 'vibe', 'beep', 'zap', 'shock') else ""))
+            return True
+        except Exception as e:
+            print(f"Button bind failed: {e}")
+            return False
 
     async def read_hand_raise(self) -> Optional[bytes]:
         """Read the current 4-byte hand-raise config from the watch."""
@@ -850,6 +934,7 @@ ACTIONS:
     info      Show device info (manufacturer, model, serial, fw/hw versions)
     sleep     Enable/disable automatic sleep tracking (--on / --off)
     handraise Configure hand-raise detection (--on/--off, --hand, --wrist, --stim)
+    button    Rebind one of the watch's hardware-button slots (--slot, --act)
     status    Show device configuration
     help      Show this help message
 
@@ -905,7 +990,8 @@ async def main():
     )
     parser.add_argument("action", nargs='?', default="help",
                         choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze",
-                                 "battery", "info", "sleep", "handraise", "status", "help"],
+                                 "battery", "info", "sleep", "handraise", "button",
+                                 "status", "help"],
                         help="Action to perform")
 
     # Common options
@@ -965,6 +1051,14 @@ async def main():
                         choices=["vibrate", "vibe", "beep", "zap", "shock", "countdown"],
                         help="Hand-raise stimulus type (default: vibrate)")
 
+    # Button rebinding
+    parser.add_argument("--slot", type=str,
+                        choices=list(BUTTON_SLOTS.keys()),
+                        help="Button slot for the 'button' action")
+    parser.add_argument("--act", type=str,
+                        choices=list(BUTTON_ACTIONS),
+                        help="Action to bind to the slot")
+
     args = parser.parse_args()
 
     # Handle help
@@ -999,6 +1093,20 @@ async def main():
                 print("       python libreshock.py sleep --off   (disable sleep tracking)")
             else:
                 await device.set_sleep_tracking(requested)
+        elif args.action == "button":
+            if not args.slot or not args.act:
+                print("Usage: python libreshock.py button --slot <slot> --act <action> [-c N] [-i N]")
+                print("  slot: " + ", ".join(sorted(set(BUTTON_SLOTS))))
+                print("  action: " + ", ".join(BUTTON_ACTIONS))
+                print("  -c, --count   for vibrate/beep/zap (default 1)")
+                print("  -i, --intensity  for vibrate/beep/zap (default 50)")
+            else:
+                await device.set_button(
+                    slot=args.slot,
+                    action=args.act,
+                    count=args.count,
+                    intensity=args.intensity,
+                )
         elif args.action == "handraise":
             requested = None
             if args.sleep_on: requested = True

@@ -326,6 +326,69 @@ actions. Verified via service enumeration (`scripts/dump_services.py`):
 | 5002 | read, write, notify | Unknown |
 | 5003 | read, notify | Unknown |
 
+### Service 156e7000 - Buttons / misc
+| Char | Properties | Notes |
+|------|------------|-------|
+| 7001 | read, write, notify | **Hardware button rebinding** (see below) |
+| 7999 | read, write | Unknown (8-byte struct) |
+
+#### Button rebinding (char 7001)
+
+Each of the watch's three physical buttons has 2 press modes (short + long)
+— 6 slots total. Each slot can be bound to a stimulus or a built-in app
+toggle. Payload sent to char 7001: `[0x02, slot, action_class, ...params]`.
+
+| Slot ID | Slot |
+|---------|------|
+| `0x01` | top short |
+| `0x02` | middle short |
+| `0x03` | lower short |
+| `0x04` | top long |
+| `0x05` | middle long |
+| `0x06` | lower long |
+
+| Action class | Action | Params |
+|--------------|--------|--------|
+| `0x01` | Vibrate | `[0x40\|count, 0x0c, intensity, 0x16, 0x16]` |
+| `0x02` | Beep | `[0x40\|count, 0x0c, intensity, 0x16, 0x16]` |
+| `0x03` | Zap | `[0x40\|count, intensity]` |
+| `0x11` | App toggle | `[0x02, 0x10, app_id]` — app_id 1=stopwatch, 2=timer |
+| `0x13` | Sleep tracking toggle | `[0x01, 0x02]` |
+| `0xff` | Disabled | (no params) |
+
+Where `count` is 1-15 packed into the low nibble of the byte OR'd with `0x40`.
+
+### Hand-raise detection (service 156e1000, char 1006)
+
+The watch can fire a stimulus when it detects you raising your hand. 4-byte
+payload to char 1006: `[flags, 0x70, stim_type, intensity]`.
+
+Flags byte:
+- bit 0 (`0x01`): enabled
+- bits 1, 2 (`0x06`): always set (sentinel)
+- bit 3 (`0x08`): wrist position — `0`=outside, `1`=inside
+- bit 4 (`0x10`): hand — `0`=right, `1`=left
+
+Stim type:
+- `0x00` = Vibrate
+- `0x01` = Beep
+- `0x02` = Zap
+- `0x03` = Countdown (watch counts down via haptic cues then zaps; lowering
+  the hand cancels)
+
+Intensity is 0-100; only Zap exposes a slider in the vendor app — the others
+use a fixed `0x1e` (30).
+
+### Sleep tracking (service 156e0000, char 0008)
+
+The watch can stream actigraphy samples (accelerometer-derived motion data)
+on the events characteristic, which the vendor app post-processes into
+Awake/REM/Light/Deep stages. The toggle is a 2-byte write `[0x02, 0x01]`
+(enable) or `[0x02, 0x00]` (disable) sent to the char value at handle
+0x008B. The vendor app actually writes to a vendor descriptor at handle+1
+(value `[0x02, 0x01]`); the watch accepts both. Time-range scheduling
+("track only between midnight and 5 AM") is entirely phone-side.
+
 ### Standard Services
 
 **Battery Service** (`0000180f-0000-1000-8000-00805f9b34fb`)

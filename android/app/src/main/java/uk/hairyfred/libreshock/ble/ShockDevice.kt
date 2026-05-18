@@ -76,6 +76,10 @@ class ShockDevice(private val context: Context) {
         // stim_type: 0=vibrate, 1=beep, 2=zap, 3=countdown
         val CHAR_HAND_RAISE: UUID = UUID.fromString("00001006-0000-1000-8000-00805f9b34fb")
 
+        // Hardware button rebinding (service 156e7000, char 7001).
+        // Payload: [0x02, slot, action_class, ...params]
+        val CHAR_BUTTON_CONFIG: UUID = UUID.fromString("00007001-0000-1000-8000-00805f9b34fb")
+
         // Standard Device Information Service (0x180A)
         val CHAR_MANUFACTURER: UUID = UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
         val CHAR_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
@@ -182,6 +186,12 @@ class ShockDevice(private val context: Context) {
     }
 
     val isConnected: Boolean get() = gatt != null
+
+    /** Bind one of the 6 hardware-button slots to an action. */
+    suspend fun setButton(slot: ButtonSlot, binding: ButtonBinding): Boolean =
+        gattMutex.withLock {
+            writeChar(CHAR_BUTTON_CONFIG, binding.toPayload(slot))
+        }
 
     /** Read the watch's current hand-raise configuration. Returns the raw
      *  4-byte payload (see [HandRaiseConfig.parse]) or null on read failure. */
@@ -510,6 +520,61 @@ sealed class ConnectionState {
     object Connected : ConnectionState()
     /** Connection dropped without a call to [ShockDevice.disconnect] — candidate for auto-reconnect. */
     object Lost : ConnectionState()
+}
+
+/** One of the 6 hardware-button slots (3 buttons x 2 press modes). */
+enum class ButtonSlot(val id: Int, val displayName: String) {
+    TOP_SHORT(1, "Top short press"),
+    MID_SHORT(2, "Middle short press"),
+    LOWER_SHORT(3, "Lower short press"),
+    TOP_LONG(4, "Top long press"),
+    MID_LONG(5, "Middle long press"),
+    LOWER_LONG(6, "Lower long press"),
+}
+
+/** Action that can be bound to a button slot. */
+enum class ButtonAction(val displayName: String) {
+    VIBRATE("Vibrate"),
+    BEEP("Beep"),
+    ZAP("Zap"),
+    STOPWATCH("Stopwatch on/off"),
+    TIMER("Timer on/off"),
+    SLEEP_TRACKING("Sleep tracking on/off"),
+    DISABLED("Disabled");
+
+    val isStim: Boolean
+        get() = this == VIBRATE || this == BEEP || this == ZAP
+}
+
+/** A single button slot's binding. */
+data class ButtonBinding(
+    val action: ButtonAction = ButtonAction.DISABLED,
+    val count: Int = 1,        // 1-15, vibrate/beep/zap only
+    val intensity: Int = 50,   // 0-100, vibrate/beep/zap only
+) {
+    /** Render the binding into the 4+ byte payload for char 7001, prefixed by the slot id. */
+    fun toPayload(slot: ButtonSlot): ByteArray {
+        val header = byteArrayOf(0x02, slot.id.toByte())
+        val countByte = (0x40 or count.coerceIn(1, 15)).toByte()
+        val i = intensity.coerceIn(0, 100).toByte()
+        val params: ByteArray = when (action) {
+            ButtonAction.VIBRATE -> byteArrayOf(0x01, countByte, 0x0c, i, 0x16, 0x16)
+            ButtonAction.BEEP    -> byteArrayOf(0x02, countByte, 0x0c, i, 0x16, 0x16)
+            ButtonAction.ZAP     -> byteArrayOf(0x03, countByte, i)
+            ButtonAction.STOPWATCH -> byteArrayOf(0x11, 0x02, 0x10, 0x01)
+            ButtonAction.TIMER     -> byteArrayOf(0x11, 0x02, 0x10, 0x02)
+            ButtonAction.SLEEP_TRACKING -> byteArrayOf(0x13, 0x01, 0x02)
+            ButtonAction.DISABLED -> byteArrayOf(0xff.toByte())
+        }
+        return header + params
+    }
+
+    fun summary(): String = when (action) {
+        ButtonAction.VIBRATE -> "Vibrate · ${count}x @ $intensity%"
+        ButtonAction.BEEP -> "Beep · ${count}x @ $intensity%"
+        ButtonAction.ZAP -> "Zap · ${count}x @ $intensity%"
+        else -> action.displayName
+    }
 }
 
 /** Hand-raise detection settings. Mirrors libreshock.py's set_hand_raise. */
