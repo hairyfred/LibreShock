@@ -307,7 +307,21 @@ fun AppRoot() {
         },
     ) { padding ->
         when (screen) {
-            "settings" -> SettingsScreen(prefs, padding)
+            "settings" -> SettingsScreen(
+                prefs = prefs,
+                device = device,
+                padding = padding,
+                onSleepToggle = { wantOn ->
+                    rootScope.launch {
+                        val ok = try { device.setSleepTracking(wantOn) } catch (_: Exception) { false }
+                        val word = if (wantOn) "enabled" else "disabled"
+                        snackbarHostState.showSnackbar(
+                            if (ok) "Sleep tracking $word — Pavlok app may show '-- and --' for the time range; re-set it there if you need scheduling"
+                            else "Failed to toggle sleep tracking"
+                        )
+                    }
+                },
+            )
             "alarms" -> AlarmsScreen(
                 alarms = alarms,
                 padding = padding,
@@ -327,6 +341,15 @@ fun AppRoot() {
                         alarms = current
                         val ok = try { device.setAlarms(current) } catch (_: Exception) { false }
                         if (ok) refreshAlarms() else refreshAlarms()  // re-sync either way
+                    }
+                },
+                onClearAll = {
+                    rootScope.launch {
+                        // Optimistic local clear so the list empties immediately.
+                        alarms = emptyList()
+                        nextAlarmLabel = null
+                        try { device.setAlarms(emptyList()) } catch (_: Exception) {}
+                        refreshAlarms()
                     }
                 },
             )
@@ -570,10 +593,16 @@ fun ConnectionFlow(
 }
 
 @Composable
-private fun SettingsScreen(prefs: SharedPreferences, padding: PaddingValues) {
+private fun SettingsScreen(
+    prefs: SharedPreferences,
+    device: ShockDevice,
+    padding: PaddingValues,
+    onSleepToggle: (Boolean) -> Unit,
+) {
     var autoScan by remember { mutableStateOf(prefs.getBoolean("auto_scan", true)) }
     var autoConnect by remember { mutableStateOf(prefs.getBoolean("auto_connect", true)) }
     var debugLogging by remember { mutableStateOf(prefs.getBoolean("debug_logging", false)) }
+    var sleepTracking by remember { mutableStateOf(prefs.getBoolean("sleep_tracking", false)) }
     val lastName = prefs.getString("last_name", null)
     val lastMac = prefs.getString("last_mac", null)
 
@@ -610,6 +639,16 @@ private fun SettingsScreen(prefs: SharedPreferences, padding: PaddingValues) {
                 debugLogging = it
                 prefs.edit { putBoolean("debug_logging", it) }
                 uk.hairyfred.libreshock.ble.DebugLog.enabled = it
+            },
+        )
+        SettingRow(
+            label = "Automatic sleep tracking",
+            description = "Tells the watch to start/stop streaming sleep-tracking data. Time-range scheduling lives in the official Pavlok app — toggling here may blank its time range until you re-set it.",
+            checked = sleepTracking,
+            onCheckedChange = {
+                sleepTracking = it
+                prefs.edit { putBoolean("sleep_tracking", it) }
+                onSleepToggle(it)
             },
         )
 

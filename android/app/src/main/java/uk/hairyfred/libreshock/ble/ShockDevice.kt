@@ -65,6 +65,11 @@ class ShockDevice(private val context: Context) {
         // Standard battery service
         val CHAR_BATTERY: UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
 
+        // Sleep tracking control (service 156e0000, char 0008). The vendor app
+        // writes [0x02, 0x01/0x00] to a vendor descriptor at handle+1, but Pavlok
+        // firmware also accepts the same payload at the characteristic value.
+        val CHAR_SLEEP_TRACKING: UUID = UUID.fromString("00000008-0000-1000-8000-00805f9b34fb")
+
         // Standard Device Information Service (0x180A)
         val CHAR_MANUFACTURER: UUID = UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
         val CHAR_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
@@ -171,6 +176,16 @@ class ShockDevice(private val context: Context) {
     }
 
     val isConnected: Boolean get() = gatt != null
+
+    /** Enable or disable automatic sleep tracking on the watch.
+     *
+     *  Mirrors libreshock.py's set_sleep_tracking — writes `[0x02, on/off]` to the
+     *  sleep-tracking characteristic. Vendor app uses a vendor descriptor at
+     *  handle+1 but Pavlok firmware also accepts the same payload at the char
+     *  value, which is what we use here for compatibility with both BLE stacks. */
+    suspend fun setSleepTracking(enabled: Boolean): Boolean = gattMutex.withLock {
+        writeChar(CHAR_SLEEP_TRACKING, byteArrayOf(0x02, if (enabled) 0x01 else 0x00))
+    }
 
     /** Read the watch's battery level (0-100). Returns null if the read fails. */
     suspend fun readBattery(): Int? {

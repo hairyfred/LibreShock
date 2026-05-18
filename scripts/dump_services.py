@@ -32,6 +32,14 @@ async def main():
                     except Exception as e:
                         line += f"  read_error={e}"
                 print(line)
+                for desc in char.descriptors:
+                    dline = f"      DESC {desc.uuid}  handle=0x{desc.handle:04x}"
+                    try:
+                        dval = await client.read_gatt_descriptor(desc.handle)
+                        dline += f"  value={bytes(dval).hex()}"
+                    except Exception as e:
+                        dline += f"  read_error={e}"
+                    print(dline)
     finally:
         await device.disconnect()
 

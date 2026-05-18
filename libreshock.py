@@ -80,6 +80,12 @@ CHAR_LED  = "00001004-0000-1000-8000-00805f9b34fb"
 CHAR_CTRL = "00005001-0000-1000-8000-00805f9b34fb"
 CHAR_DATA = "00005002-0000-1000-8000-00805f9b34fb"
 
+# Sleep tracking lives in service 156e0000 char 0008 (write,notify). The
+# enable/disable command is a 2-byte write to the *descriptor* immediately
+# following the char value (handle+1). Bleak doesn't enumerate this descriptor,
+# so we compute its handle from the characteristic at runtime.
+CHAR_SLEEP_TRACKING = "00000008-0000-1000-8000-00805f9b34fb"
+
 # Standard Battery Service (0x180F)
 CHAR_BATTERY = "00002a19-0000-1000-8000-00805f9b34fb"
 
@@ -390,6 +396,46 @@ class ShockDevice:
             except:
                 configs[name] = None
         return configs
+
+    async def set_sleep_tracking(self, enabled: bool) -> bool:
+        """Enable or disable automatic sleep tracking on the watch.
+
+        Vendor app writes `[0x02, enabled_flag]` to a vendor-specific
+        descriptor at `(char 0x0008 value handle) + 1`. The Windows BLE
+        stack and bleak don't expose that descriptor (UUID isn't a
+        recognized standard one), so we first try writing the same payload
+        to the char value itself — some Pavlok firmware accepts both —
+        then fall back to the descriptor write if a UUID exposes it.
+        """
+        payload = bytes([0x02, 0x01 if enabled else 0x00])
+        char = self.client.services.get_characteristic(CHAR_SLEEP_TRACKING)
+        if char is None:
+            print("Sleep tracking characteristic not found on device")
+            return False
+
+        # Attempt 1: write to the char value itself.
+        try:
+            await self.client.write_gatt_char(CHAR_SLEEP_TRACKING, payload, response=True)
+            print(f"Sleep tracking {'enabled' if enabled else 'disabled'}.")
+            print("Note: the Pavlok app schedules sleep tracking on the phone side"
+                  " using a time range that's stored locally. Toggling directly via"
+                  " libreshock bypasses that — the app may show a blank '-- and --'"
+                  " time range until you re-set it in the app.")
+            return True
+        except Exception as char_err:
+            char_error = char_err
+
+        # Attempt 2: descriptor write (will fail on Windows if not enumerated).
+        try:
+            desc_handle = char.handle + 1
+            await self.client.write_gatt_descriptor(desc_handle, payload)
+            print(f"Sleep tracking {'enabled' if enabled else 'disabled'} (via descriptor write)")
+            return True
+        except Exception as desc_err:
+            print(f"Sleep tracking write failed.")
+            print(f"  char-value attempt: {char_error}")
+            print(f"  descriptor attempt: {desc_err}")
+            return False
 
     async def stop_alarm(self) -> bool:
         """Stop a currently-firing alarm on the device.
@@ -743,6 +789,7 @@ ACTIONS:
     snooze    Snooze a currently-firing alarm
     battery   Show watch battery percentage
     info      Show device info (manufacturer, model, serial, fw/hw versions)
+    sleep     Enable/disable automatic sleep tracking (--on / --off)
     status    Show device configuration
     help      Show this help message
 
@@ -798,7 +845,7 @@ async def main():
     )
     parser.add_argument("action", nargs='?', default="help",
                         choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze",
-                                 "battery", "info", "status", "help"],
+                                 "battery", "info", "sleep", "status", "help"],
                         help="Action to perform")
 
     # Common options
@@ -843,6 +890,12 @@ async def main():
     parser.add_argument("--no-snooze", dest="snooze", action="store_false",
                         help="Disable snooze")
 
+    # Sleep-tracking flags
+    parser.add_argument("--on", dest="sleep_on", action="store_true",
+                        help="With 'sleep' action: turn sleep tracking on")
+    parser.add_argument("--off", dest="sleep_off", action="store_true",
+                        help="With 'sleep' action: turn sleep tracking off")
+
     args = parser.parse_args()
 
     # Handle help
@@ -868,6 +921,15 @@ async def main():
             await device.stop_alarm()
         elif args.action == "snooze":
             await device.snooze_alarm()
+        elif args.action == "sleep":
+            requested = None
+            if args.sleep_on: requested = True
+            elif args.sleep_off: requested = False
+            if requested is None:
+                print("Usage: python libreshock.py sleep --on    (enable sleep tracking)")
+                print("       python libreshock.py sleep --off   (disable sleep tracking)")
+            else:
+                await device.set_sleep_tracking(requested)
         elif args.action == "battery":
             level = await device.read_battery()
             if level is None:
@@ -895,7 +957,9 @@ async def main():
             elif args.clear:
                 # Clear by sending empty alarm packet
                 await device.set_alarms([])
-                print("Alarms cleared")
+                print("Alarms cleared.")
+                print("Note: the official Pavlok app may still show these alarms "
+                      "cached locally — they're no longer on the watch.")
 
             elif args.enable is not None or args.disable is not None:
                 idx = args.enable if args.enable is not None else args.disable

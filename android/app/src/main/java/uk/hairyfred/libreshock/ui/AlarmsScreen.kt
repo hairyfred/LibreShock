@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +65,7 @@ fun AlarmsScreen(
     onRefresh: () -> Unit,
     onEdit: (alarm: AlarmConfig?, index: Int?) -> Unit,
     onToggleEnabled: (index: Int, enabled: Boolean) -> Unit,
+    onClearAll: () -> Unit,
 ) {
     // alarms == null means "not loaded yet" (or read failed). Empty list means
     // we have a confirmed empty state. Trigger an initial refresh if we don't
@@ -76,6 +78,8 @@ fun AlarmsScreen(
         alarms.isEmpty() -> "No alarms set"
         else -> null
     }
+
+    var showClearDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -93,7 +97,10 @@ fun AlarmsScreen(
         }
         statusText?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             itemsIndexed(list) { index, alarm ->
                 AlarmCard(
                     alarm = alarm,
@@ -102,6 +109,45 @@ fun AlarmsScreen(
                 )
             }
         }
+
+        if (list.isNotEmpty()) {
+            TextButton(
+                onClick = { showClearDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) { Text("Clear all alarms") }
+        }
+    }
+
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = { Text("Clear all alarms?") },
+            text = {
+                Text(
+                    "This removes every alarm from the watch.\n\n" +
+                    "The official Pavlok app may still show these alarms — it caches " +
+                    "them locally and isn't aware they were removed. They are no longer " +
+                    "on the watch itself."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearDialog = false
+                        onClearAll()
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("Clear all") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

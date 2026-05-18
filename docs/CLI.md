@@ -27,6 +27,7 @@ each run, so no address needs to be passed.
 | `snooze` | Snooze a currently-firing alarm |
 | `battery` | Show the watch's battery percentage |
 | `info` | Show device info (name, model, serial, firmware, clock, timezone) |
+| `sleep` | Enable/disable automatic sleep tracking (`--on` / `--off`) |
 | `status` | Show the raw vibe / beep / zap / LED config currently stored on the device |
 | `help` | Print full help with all options |
 
@@ -99,3 +100,25 @@ python libreshock.py info      # name, manufacturer, model, serial,
                                # firmware/hardware, on-device clock, timezone
 python libreshock.py status    # current vibe/beep/zap/LED raw config bytes
 ```
+
+## Sleep tracking
+
+The watch can stream actigraphy data (raw accelerometer-derived motion
+samples) which the vendor app post-processes into Awake/REM/Light/Deep
+sleep stages. Time-range scheduling (e.g. "track only between midnight
+and 5 AM") is entirely phone-side — the BLE command is just on / off.
+
+```
+python libreshock.py sleep --on    # start streaming sleep data
+python libreshock.py sleep --off   # stop streaming
+```
+
+This project doesn't yet parse the raw stream into sleep stages — that's
+a separate signal-processing job. The watch itself only knows "track" or
+"don't track"; the staging happens in software downstream.
+
+**Heads up:** the Pavlok app stores its sleep-tracking time range locally
+on the phone, not on the watch. If you toggle via libreshock the watch
+will obey, but the Pavlok app may show a blank "-- and --" time range
+afterwards because we bypassed its scheduling. Re-set the time range in
+the Pavlok app to clear the blank state.
