@@ -193,6 +193,121 @@ class ShockDevice(private val context: Context) {
             writeChar(CHAR_BUTTON_CONFIG, binding.toPayload(slot))
         }
 
+    /** Build a human-readable debug report describing this device — BLE name,
+     *  manufacturer/model/serial/fw/hw, every service, char and descriptor
+     *  with read values. Designed to be exported and pasted into bug reports
+     *  for users with non-Pavlok-3 devices that we'd like to support.
+     *
+     *  When [censor] is true, redacts unique device identifiers (BLE name
+     *  suffix, MAC, serial-number string). */
+    @SuppressLint("MissingPermission")
+    suspend fun generateDebugReport(
+        deviceName: String?,
+        appVersion: String,
+        censor: Boolean,
+    ): String {
+        val sb = StringBuilder()
+        sb.appendLine("# LibreShock debug report")
+        sb.appendLine("Generated: ${java.time.OffsetDateTime.now()}")
+        sb.appendLine("App: LibreShock for Android ($appVersion)")
+        if (censor) sb.appendLine("Censored: yes (BLE MAC, name suffix, serial redacted)")
+        sb.appendLine()
+
+        // Device-level metadata
+        sb.appendLine("## Device")
+        val g = gatt
+        val addr = g?.device?.address
+        val name = deviceName ?: g?.device?.name
+        sb.appendLine("  ble_name: ${if (censor) redactName(name) else name}")
+        sb.appendLine("  address:  ${if (censor) redactAddress(addr) else addr}")
+        val info = try { readDeviceInfo(deviceName) } catch (_: Exception) { null }
+        if (info != null) {
+            fun emit(label: String, raw: String?) {
+                if (raw == null) return
+                val redacted = if (censor && (label == "serial" || label == "name"))
+                    "X".repeat(raw.length)
+                else raw
+                sb.appendLine("  $label: $redacted")
+            }
+            emit("manufacturer", info.manufacturer)
+            emit("model", info.model)
+            emit("serial", info.serial)
+            emit("hardware_revision", info.hardwareRevision)
+            emit("firmware_revision", info.firmwareRevision)
+            emit("timezone", info.timezone)
+            emit("date", info.date)
+            emit("time", info.time)
+        }
+        sb.appendLine()
+
+        // Battery
+        sb.appendLine("## Battery")
+        val pct = try { readBattery() } catch (_: Exception) { null }
+        sb.appendLine(if (pct != null) "  level: $pct%" else "  level: (read failed)")
+        sb.appendLine()
+
+        // Full GATT tree
+        sb.appendLine("## GATT services")
+        if (g == null) {
+            sb.appendLine("(no GATT connection)")
+        } else {
+            for (service in g.services) {
+                sb.appendLine("SERVICE ${service.uuid}")
+                for (char in service.characteristics) {
+                    val props = listOf(
+                        "read" to BluetoothGattCharacteristic.PROPERTY_READ,
+                        "write" to BluetoothGattCharacteristic.PROPERTY_WRITE,
+                        "write-no-resp" to BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+                        "notify" to BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                        "indicate" to BluetoothGattCharacteristic.PROPERTY_INDICATE,
+                    ).filter { (_, bit) -> (char.properties and bit) != 0 }
+                        .joinToString(",") { it.first }
+                    val canRead = (char.properties and BluetoothGattCharacteristic.PROPERTY_READ) != 0
+                    var line = "  CHAR ${char.uuid}  handle=0x%04x  [$props]".format(char.instanceId)
+                    if (canRead) {
+                        val bytes = try { readChar(char.uuid) } catch (_: Exception) { null }
+                        if (bytes != null) {
+                            val redacted =
+                                if (censor && char.uuid in REDACT_UUIDS)
+                                    ByteArray(bytes.size) { 'X'.code.toByte() }
+                                else bytes
+                            val hex = redacted.joinToString("") { "%02x".format(it) }
+                            val ascii = redacted.map {
+                                val v = it.toInt() and 0xFF
+                                if (v in 32..126) v.toChar() else '.'
+                            }.joinToString("")
+                            line += "  value=$hex ascii='$ascii'"
+                        } else {
+                            line += "  read_error"
+                        }
+                    }
+                    sb.appendLine(line)
+                    for (desc in char.descriptors) {
+                        sb.appendLine("      DESC ${desc.uuid}")
+                    }
+                }
+            }
+        }
+        sb.appendLine()
+        sb.appendLine("# end of report")
+        return sb.toString()
+    }
+
+    private fun redactName(name: String?): String {
+        if (name == null) return "(unknown)"
+        val parts = name.split("-")
+        return if (parts.size >= 3) parts.dropLast(1).joinToString("-") + "-XXXX" else name
+    }
+
+    private fun redactAddress(addr: String?): String {
+        if (addr == null) return "XX:XX:XX:XX:XX:XX"
+        val parts = addr.split(":")
+        return if (parts.size == 6)
+            (parts.take(3) + listOf("XX", "XX", "XX")).joinToString(":")
+        else "XX:XX:XX:XX:XX:XX"
+    }
+
+
     /** Read the watch's current hand-raise configuration. Returns the raw
      *  4-byte payload (see [HandRaiseConfig.parse]) or null on read failure. */
     suspend fun readHandRaise(): ByteArray? = readChar(CHAR_HAND_RAISE)
@@ -672,6 +787,13 @@ internal fun formatTimezone(raw: String): String {
 
 private val SUCCESS_RESP_A = byteArrayOf(0, 0, 0, 0)
 private val SUCCESS_RESP_B = byteArrayOf(4, 0, 0, 0)
+
+/** Char UUIDs whose values uniquely identify the device — redacted in censored
+ *  debug reports. GAP Device Name (0x2A00) + Serial Number String (0x2A25). */
+private val REDACT_UUIDS = setOf(
+    UUID.fromString("00002a00-0000-1000-8000-00805f9b34fb"),
+    UUID.fromString("00002a25-0000-1000-8000-00805f9b34fb"),
+)
 
 private fun ByteArray.chunkedBytes(size: Int): List<ByteArray> {
     val chunks = mutableListOf<ByteArray>()

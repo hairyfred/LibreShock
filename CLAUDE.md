@@ -458,6 +458,7 @@ app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
 - **Bluetooth-off detection**: a `BluetoothAdapter.ACTION_STATE_CHANGED` receiver surfaces a persistent "Bluetooth is off" snackbar with a "Turn on" action that opens the system enable-BT prompt. The snackbar auto-dismisses when BT comes back on.
 - **Auto-reconnect**: when the watch disconnects unexpectedly (Out of range / BT toggled / etc.) the app attempts to reconnect to the last-known MAC. Distinguishes intentional disconnects (user tapped the Disconnect button) from lost connections via an `intentionalDisconnect` flag inside `ShockDevice`. Reconnect kicks in either immediately (BT still on) or when BT comes back on (BT-state receiver).
 - **Debug logging** toggle in Settings: turns on verbose BLE read/write logcat traces via `DebugLog.d(...)` calls inside `ShockDevice.kt`. Off by default; persisted across launches. View via `adb logcat -s ShockDevice`.
+- **Export debug log** button in Settings: generates a text report (full GATT tree with hex + ASCII characteristic values, battery, device-info strings) into the app cache and fires `Intent.ACTION_SEND` via FileProvider so the user can share it to email / Drive / GitHub. "Censor sensitive info" checkbox (default on) redacts MAC, BLE name suffix, and serial. Equivalent to `python libreshock.py debug --censor` — both paths produce the same report so users with unsupported Pavlok models can submit one file for protocol extension.
 
 **Build/install:**
 ```

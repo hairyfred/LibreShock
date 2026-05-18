@@ -36,8 +36,11 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -69,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -619,10 +623,14 @@ private fun SettingsScreen(
     padding: PaddingValues,
     onSleepToggle: (Boolean) -> Unit,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var autoScan by remember { mutableStateOf(prefs.getBoolean("auto_scan", true)) }
     var autoConnect by remember { mutableStateOf(prefs.getBoolean("auto_connect", true)) }
     var debugLogging by remember { mutableStateOf(prefs.getBoolean("debug_logging", false)) }
     var sleepTracking by remember { mutableStateOf(prefs.getBoolean("sleep_tracking", false)) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
     val lastName = prefs.getString("last_name", null)
     val lastMac = prefs.getString("last_mac", null)
 
@@ -687,6 +695,122 @@ private fun SettingsScreen(
                 }
             }
         }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Export debug log", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "If your watch is a Pavlok model we don't support yet, export a debug log " +
+                        "and attach it to a GitHub issue so we can extend the protocol.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    enabled = !exporting,
+                    onClick = { showExportDialog = true },
+                ) {
+                    if (exporting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.height(16.dp).width(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Generating...")
+                    } else {
+                        Text("Export debug log")
+                    }
+                }
+            }
+        }
+    }
+
+    if (showExportDialog) {
+        var censor by remember { mutableStateOf(true) }
+        AlertDialog(
+            onDismissRequest = { showExportDialog = false },
+            title = { Text("Export debug log") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Generates a text file with GATT services, characteristic values, " +
+                            "battery level, and device info. Watch must be connected.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = censor, onCheckedChange = { censor = it })
+                        Spacer(Modifier.width(4.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Censor sensitive info", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Redacts BLE name suffix, MAC address, and serial number.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExportDialog = false
+                    exporting = true
+                    scope.launch {
+                        val result = exportDebugReport(
+                            context = context,
+                            device = device,
+                            deviceName = prefs.getString("last_name", null),
+                            censor = censor,
+                        )
+                        exporting = false
+                        if (result == null) {
+                            // Toast-style feedback via system; SnackbarHost belongs to AppRoot
+                            android.widget.Toast.makeText(
+                                context,
+                                "Export failed — is the watch connected?",
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }) { Text("Generate") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/** Generate the debug report, write to cache, fire share intent. Returns the
+ *  shared URI on success or null on failure. */
+private suspend fun exportDebugReport(
+    context: Context,
+    device: ShockDevice,
+    deviceName: String?,
+    censor: Boolean,
+): android.net.Uri? {
+    return try {
+        val pkg = context.packageName
+        val appVersion = try {
+            context.packageManager.getPackageInfo(pkg, 0).versionName ?: "unknown"
+        } catch (_: Exception) { "unknown" }
+        val report = device.generateDebugReport(deviceName, appVersion, censor)
+        val dir = java.io.File(context.cacheDir, "debug").apply { mkdirs() }
+        val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val file = java.io.File(dir, "libreshock-debug-$ts.txt")
+        file.writeText(report)
+        val uri = FileProvider.getUriForFile(context, "$pkg.fileprovider", file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "LibreShock debug log")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(send, "Share debug log")
+            .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        context.startActivity(chooser)
+        uri
+    } catch (_: Exception) {
+        null
     }
 }
 

@@ -935,6 +935,8 @@ ACTIONS:
     sleep     Enable/disable automatic sleep tracking (--on / --off)
     handraise Configure hand-raise detection (--on/--off, --hand, --wrist, --stim)
     button    Rebind one of the watch's hardware-button slots (--slot, --act)
+    debug     Print a debug report (services, chars, descriptors, device info)
+              for use in bug reports. Redirect to a file with `> debug.txt`.
     status    Show device configuration
     help      Show this help message
 
@@ -983,6 +985,107 @@ ALARM OPTIONS:
     print(help_text)
 
 
+def _redact_address(addr: Optional[str]) -> str:
+    """Replace the last 3 octets of a MAC with XX so the OUI (manufacturer) is
+    still visible for debugging but the unique device id isn't."""
+    if not addr or len(addr) < 8:
+        return "XX:XX:XX:XX:XX:XX"
+    parts = addr.split(":")
+    if len(parts) != 6:
+        return "XX:XX:XX:XX:XX:XX"
+    return ":".join(parts[:3] + ["XX", "XX", "XX"])
+
+
+def _redact_name(name: Optional[str]) -> str:
+    """Strip the unique suffix from a `Pavlok-3-XXXX` style name."""
+    if not name:
+        return "(unknown)"
+    parts = name.split("-")
+    if len(parts) >= 3:
+        return "-".join(parts[:-1]) + "-XXXX"
+    return name
+
+
+def _redact_serial(value: bytes) -> bytes:
+    """Replace any printable hex-id payload with X's of the same length."""
+    return b"X" * len(value)
+
+
+# Standard GATT characteristics that contain unique device identifiers we
+# want to redact in censored debug reports.
+_REDACT_CHAR_UUIDS = {
+    "00002a00-0000-1000-8000-00805f9b34fb",  # GAP Device Name
+    "00002a25-0000-1000-8000-00805f9b34fb",  # Serial Number String
+}
+
+
+async def _print_debug_report(device: "ShockDevice", censor: bool = False) -> None:
+    """Dump a human-readable report describing the connected device: BLE name,
+    all DIS strings, every service / characteristic / descriptor with read
+    values. Designed to be redirected to a file so users with non-Pavlok-3
+    devices can paste it into a bug report and we can extend support.
+
+    Usage:
+        python libreshock.py debug > libreshock-debug.txt
+        python libreshock.py debug --censor > debug.txt   # safer for sharing
+    """
+    import datetime
+    print("# LibreShock debug report")
+    print(f"Generated: {datetime.datetime.now().isoformat(timespec='seconds')}")
+    print(f"Library:   libreshock.py")
+    if censor:
+        print(f"Censored:  yes (BLE MAC, name suffix, serial redacted)")
+    print()
+
+    # Advertisement name + DIS strings
+    print("## Device")
+    ble_name = device.device.name if device.device is not None else None
+    print(f"  ble_name: {_redact_name(ble_name) if censor else ble_name}")
+    print(f"  address:  {_redact_address(device.address) if censor else device.address}")
+    info = await device.read_device_info()
+    for key, value in info.items():
+        if censor and key == "serial" and isinstance(value, str):
+            value = "X" * len(value)
+        if censor and key == "name" and isinstance(value, str):
+            value = _redact_name(value)
+        print(f"  {key}: {value}")
+    print()
+
+    # Battery
+    print("## Battery")
+    pct = await device.read_battery()
+    print(f"  level: {pct}%" if pct is not None else "  level: (read failed)")
+    print()
+
+    # Service tree with descriptors
+    print("## GATT services")
+    for service in device.client.services:
+        print(f"SERVICE {service.uuid}")
+        for char in service.characteristics:
+            props = ",".join(char.properties)
+            line = f"  CHAR {char.uuid}  handle=0x{char.handle:04x}  [{props}]"
+            if "read" in char.properties:
+                try:
+                    val = await device.client.read_gatt_char(char.uuid)
+                    if censor and str(char.uuid).lower() in _REDACT_CHAR_UUIDS:
+                        val = _redact_serial(val)
+                    ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in val)
+                    line += f"  value={val.hex()} ascii={ascii_part!r}"
+                except Exception as e:
+                    line += f"  read_error={e}"
+            print(line)
+            for desc in char.descriptors:
+                dline = f"      DESC {desc.uuid}  handle=0x{desc.handle:04x}"
+                try:
+                    dval = await device.client.read_gatt_descriptor(desc.handle)
+                    dline += f"  value={bytes(dval).hex()}"
+                except Exception as e:
+                    dline += f"  read_error={e}"
+                print(dline)
+    print()
+    print("# end of report")
+
+
 async def main():
     parser = argparse.ArgumentParser(
         description="LibreShock - BLE Shock Device Controller",
@@ -991,7 +1094,7 @@ async def main():
     parser.add_argument("action", nargs='?', default="help",
                         choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze",
                                  "battery", "info", "sleep", "handraise", "button",
-                                 "status", "help"],
+                                 "debug", "status", "help"],
                         help="Action to perform")
 
     # Common options
@@ -1059,6 +1162,11 @@ async def main():
                         choices=list(BUTTON_ACTIONS),
                         help="Action to bind to the slot")
 
+    # Debug-report options
+    parser.add_argument("--censor", action="store_true",
+                        help="With 'debug': redact identifying info (BLE MAC, "
+                             "BLE name suffix, serial number)")
+
     args = parser.parse_args()
 
     # Handle help
@@ -1125,6 +1233,8 @@ async def main():
                     stimulus=args.stim,
                     intensity=args.intensity,
                 )
+        elif args.action == "debug":
+            await _print_debug_report(device, censor=args.censor)
         elif args.action == "battery":
             level = await device.read_battery()
             if level is None:

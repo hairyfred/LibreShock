@@ -31,6 +31,7 @@ each run, so no address needs to be passed.
 | `handraise` | Configure hand-raise detection (`--on`/`--off`, `--hand`, `--wrist`, `--stim`) |
 | `button` | Rebind one of the 6 hardware-button slots (`--slot`, `--act`) |
 | `status` | Show the raw vibe / beep / zap / LED config currently stored on the device |
+| `debug` | Print a debug report (GATT services, characteristic values, battery, device info) for issue reports. Use `--censor` to redact MAC / name suffix / serial. |
 | `help` | Print full help with all options |
 
 Run `python libreshock.py help` for a full option list at any time.
@@ -192,3 +193,20 @@ on the phone, not on the watch. If you toggle via libreshock the watch
 will obey, but the Pavlok app may show a blank "-- and --" time range
 afterwards because we bypassed its scheduling. Re-set the time range in
 the Pavlok app to clear the blank state.
+
+## Debug report
+
+If your watch is a Pavlok model LibreShock doesn't fully support yet,
+generate a debug report and attach it to a GitHub issue so we can extend
+the protocol:
+
+```
+python libreshock.py debug --censor > debug.txt
+```
+
+The report walks the full GATT tree and dumps every readable
+characteristic value (hex + ASCII) along with battery level and the
+Device Information service strings. `--censor` redacts the BLE MAC,
+the trailing characters of the BLE name, and the serial-number string
+so you can share the file publicly. Omit `--censor` if you're attaching
+it to a private channel.
