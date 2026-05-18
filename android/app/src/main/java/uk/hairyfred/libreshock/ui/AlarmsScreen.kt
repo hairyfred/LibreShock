@@ -40,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -62,6 +63,7 @@ fun AlarmsScreen(
     padding: PaddingValues,
     onRefresh: () -> Unit,
     onEdit: (alarm: AlarmConfig?, index: Int?) -> Unit,
+    onToggleEnabled: (index: Int, enabled: Boolean) -> Unit,
 ) {
     // alarms == null means "not loaded yet" (or read failed). Empty list means
     // we have a confirmed empty state. Trigger an initial refresh if we don't
@@ -93,30 +95,50 @@ fun AlarmsScreen(
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             itemsIndexed(list) { index, alarm ->
-                AlarmCard(alarm = alarm, onClick = { onEdit(alarm, index) })
+                AlarmCard(
+                    alarm = alarm,
+                    onClick = { onEdit(alarm, index) },
+                    onToggleEnabled = { newEnabled -> onToggleEnabled(index, newEnabled) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun AlarmCard(alarm: AlarmConfig, onClick: () -> Unit) {
+private fun AlarmCard(
+    alarm: AlarmConfig,
+    onClick: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                "%02d:%02d".format(alarm.hour, alarm.minute),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(daysSummary(alarm.weekdays), style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(4.dp))
-            Text(stimSummary(alarm), style = MaterialTheme.typography.bodySmall)
+        Row(
+            modifier = Modifier
+                .padding(12.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .alpha(if (alarm.enabled) 1f else 0.5f),
+            ) {
+                Text(
+                    "%02d:%02d".format(alarm.hour, alarm.minute),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(daysSummary(alarm.weekdays), style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(4.dp))
+                Text(stimSummary(alarm), style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = alarm.enabled, onCheckedChange = onToggleEnabled)
         }
     }
 }
@@ -171,6 +193,7 @@ fun AlarmEditScreen(
     )
     var dayMask by remember { mutableStateOf(starting.weekdays and 0x7F) }
     var snooze by remember { mutableStateOf(starting.snooze) }
+    var enabled by remember { mutableStateOf(starting.enabled) }
     var interval by remember { mutableStateOf(starting.stimulusInterval.toFloat()) }
 
     var vibeOn by remember { mutableStateOf(starting.vibration.enabled) }
@@ -187,7 +210,8 @@ fun AlarmEditScreen(
 
     fun build(): AlarmConfig = AlarmConfig(
         hour = timePickerState.hour, minute = timePickerState.minute, name = "alarm",
-        weekdays = dayMask, snooze = snooze, stimulusInterval = interval.toInt().coerceAtLeast(1),
+        weekdays = dayMask, snooze = snooze, enabled = enabled,
+        stimulusInterval = interval.toInt().coerceAtLeast(1),
         vibration = AlarmAction(enabled = vibeOn, count = 5, intensity = vibeIntensity.toInt()),
         beep = AlarmAction(enabled = beepOn, count = 5, intensity = beepIntensity.toInt()),
         zap = AlarmAction(enabled = zapOn, count = zapCount.toInt().coerceIn(1, 15), intensity = zapIntensity.toInt()),
@@ -231,6 +255,24 @@ fun AlarmEditScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Enabled", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (enabled) "Alarm will fire" else "Alarm is off",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = { enabled = it })
+            }
+        }
+
         Card(
             modifier = Modifier
                 .fillMaxWidth()

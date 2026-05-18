@@ -317,6 +317,18 @@ fun AppRoot() {
                     editingIndex = index
                     screen = "alarm_edit"
                 },
+                onToggleEnabled = { index, newEnabled ->
+                    rootScope.launch {
+                        val current = alarms?.toMutableList() ?: return@launch
+                        if (index !in current.indices) return@launch
+                        if (current[index].enabled == newEnabled) return@launch
+                        current[index] = current[index].copy(enabled = newEnabled)
+                        // Optimistic update so the Switch animates immediately.
+                        alarms = current
+                        val ok = try { device.setAlarms(current) } catch (_: Exception) { false }
+                        if (ok) refreshAlarms() else refreshAlarms()  // re-sync either way
+                    }
+                },
             )
             "alarm_edit" -> AlarmEditScreen(device, editingAlarm, editingIndex, padding) {
                 screen = "alarms"

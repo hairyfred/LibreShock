@@ -60,12 +60,19 @@ python libreshock.py alarm -t 18:00 --days none --vibe 60 --beep 60 --zap 40
 
 # Add another alarm without overwriting existing ones
 python libreshock.py alarm --add 8:00 --days weekdays
+
+# Enable / disable an alarm without deleting it (1-based index from --list)
+python libreshock.py alarm --disable 2
+python libreshock.py alarm --enable 2
 ```
 
 Alarm flags:
 
 - `-t, --time HH:MM` — alarm time, 24-hour
 - `--add HH:MM` — append instead of replace
+- `--enable N`, `--disable N` — flip the "alarm on" flag for the alarm at
+  1-based index N (see `--list` for indexes). Keeps the alarm in the list;
+  only stops/starts it firing
 - `-d, --days …` — repeat days. Accepts `daily`, `weekdays`, `weekends`,
   `none` (one-shot), or a comma list like `mon,wed,fri`
 - `--vibe N|off`, `--beep N|off`, `--zap N|off` — per-stim intensity (0-100)

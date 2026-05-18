@@ -818,6 +818,10 @@ async def main():
                         help="List current alarms")
     parser.add_argument("--clear", action="store_true",
                         help="Clear all alarms")
+    parser.add_argument("--enable", type=int, metavar="INDEX",
+                        help="Enable the alarm at the given 1-based index (see --list)")
+    parser.add_argument("--disable", type=int, metavar="INDEX",
+                        help="Disable the alarm at the given 1-based index (see --list)")
     parser.add_argument("-n", "--name", type=str, default="alarm",
                         help="Alarm name (default: alarm)")
     parser.add_argument("-d", "--days", type=str, default="daily",
@@ -892,6 +896,25 @@ async def main():
                 # Clear by sending empty alarm packet
                 await device.set_alarms([])
                 print("Alarms cleared")
+
+            elif args.enable is not None or args.disable is not None:
+                idx = args.enable if args.enable is not None else args.disable
+                want_enabled = args.enable is not None
+                existing = await device.list_alarms()
+                if not existing:
+                    print("No alarms set")
+                elif idx < 1 or idx > len(existing):
+                    print(f"Index {idx} out of range; have {len(existing)} alarm(s). Use --list.")
+                else:
+                    target = existing[idx - 1]
+                    if target.enabled == want_enabled:
+                        action = "already" + (" enabled" if want_enabled else " disabled")
+                        print(f"Alarm {idx} is {action}")
+                    else:
+                        target.enabled = want_enabled
+                        ok = await device.set_alarms(existing)
+                        verb = "Enabled" if want_enabled else "Disabled"
+                        print(f"{verb} alarm {idx}" if ok else f"Failed to update alarm {idx}")
 
             elif args.add or args.time:
                 # Parse action settings
