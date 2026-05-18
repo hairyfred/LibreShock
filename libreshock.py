@@ -86,6 +86,22 @@ CHAR_DATA = "00005002-0000-1000-8000-00805f9b34fb"
 # so we compute its handle from the characteristic at runtime.
 CHAR_SLEEP_TRACKING = "00000008-0000-1000-8000-00805f9b34fb"
 
+# Hand-raise detection (service 156e1000, char 1006, user description "HD").
+# 4-byte payload: [flags, 0x70, stim_type, intensity].
+#   flags bit 0 = enabled, bits 1+2 always set, bit 3 = inside wrist,
+#         bit 4 = left hand. Bits 5-7 unobserved.
+#   stim_type: 0=vibrate, 1=beep, 2=zap, 3=countdown.
+#   intensity: 0-100; only zap surfaces a slider in the vendor app
+#              (other stims default to 30).
+CHAR_HAND_RAISE = "00001006-0000-1000-8000-00805f9b34fb"
+
+HAND_RAISE_STIMULI = {
+    "vibrate": 0x00, "vibe": 0x00,
+    "beep": 0x01,
+    "zap": 0x02, "shock": 0x02,
+    "countdown": 0x03,
+}
+
 # Standard Battery Service (0x180F)
 CHAR_BATTERY = "00002a19-0000-1000-8000-00805f9b34fb"
 
@@ -396,6 +412,49 @@ class ShockDevice:
             except:
                 configs[name] = None
         return configs
+
+    async def read_hand_raise(self) -> Optional[bytes]:
+        """Read the current 4-byte hand-raise config from the watch."""
+        try:
+            return bytes(await self.client.read_gatt_char(CHAR_HAND_RAISE))
+        except Exception as e:
+            print(f"Hand-raise read failed: {e}")
+            return None
+
+    async def set_hand_raise(
+        self,
+        enabled: bool,
+        hand: str = "right",         # "left" or "right"
+        wrist: str = "outside",      # "outside" or "inside"
+        stimulus: str = "vibrate",   # vibrate / beep / zap / countdown
+        intensity: int = 30,         # 0-100; only zap exposes a slider in vendor app
+    ) -> bool:
+        """Configure the watch's hand-raise detection feature.
+
+        Mirrors the vendor app's Hand Raise Detection screen. Sends a single
+        4-byte write to char 1006 (handle 0x0020 on observed devices).
+        """
+        if stimulus.lower() not in HAND_RAISE_STIMULI:
+            print(f"Unknown stimulus '{stimulus}'. Use one of: vibrate, beep, zap, countdown")
+            return False
+
+        flags = 0x06  # bits 1+2 always set
+        if enabled: flags |= 0x01
+        if wrist.lower() == "inside": flags |= 0x08
+        if hand.lower() == "left":   flags |= 0x10
+
+        stim_byte = HAND_RAISE_STIMULI[stimulus.lower()]
+        intensity_byte = max(0, min(100, int(intensity)))
+        payload = bytes([flags, 0x70, stim_byte, intensity_byte])
+
+        try:
+            await self.client.write_gatt_char(CHAR_HAND_RAISE, payload, response=True)
+            state = "enabled" if enabled else "disabled"
+            print(f"Hand-raise {state} ({hand} hand, {wrist} wrist, {stimulus} @ {intensity_byte}%)")
+            return True
+        except Exception as e:
+            print(f"Hand-raise write failed: {e}")
+            return False
 
     async def set_sleep_tracking(self, enabled: bool) -> bool:
         """Enable or disable automatic sleep tracking on the watch.
@@ -790,6 +849,7 @@ ACTIONS:
     battery   Show watch battery percentage
     info      Show device info (manufacturer, model, serial, fw/hw versions)
     sleep     Enable/disable automatic sleep tracking (--on / --off)
+    handraise Configure hand-raise detection (--on/--off, --hand, --wrist, --stim)
     status    Show device configuration
     help      Show this help message
 
@@ -845,7 +905,7 @@ async def main():
     )
     parser.add_argument("action", nargs='?', default="help",
                         choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze",
-                                 "battery", "info", "sleep", "status", "help"],
+                                 "battery", "info", "sleep", "handraise", "status", "help"],
                         help="Action to perform")
 
     # Common options
@@ -890,11 +950,20 @@ async def main():
     parser.add_argument("--no-snooze", dest="snooze", action="store_false",
                         help="Disable snooze")
 
-    # Sleep-tracking flags
+    # Sleep-tracking + hand-raise shared on/off flags
     parser.add_argument("--on", dest="sleep_on", action="store_true",
-                        help="With 'sleep' action: turn sleep tracking on")
+                        help="With 'sleep'/'handraise' action: turn the feature on")
     parser.add_argument("--off", dest="sleep_off", action="store_true",
-                        help="With 'sleep' action: turn sleep tracking off")
+                        help="With 'sleep'/'handraise' action: turn the feature off")
+
+    # Hand-raise specifics
+    parser.add_argument("--hand", type=str, default="right", choices=["left", "right"],
+                        help="Hand-raise: which hand the watch is on (default: right)")
+    parser.add_argument("--wrist", type=str, default="outside", choices=["inside", "outside"],
+                        help="Hand-raise: wrist position (default: outside)")
+    parser.add_argument("--stim", type=str, default="vibrate",
+                        choices=["vibrate", "vibe", "beep", "zap", "shock", "countdown"],
+                        help="Hand-raise stimulus type (default: vibrate)")
 
     args = parser.parse_args()
 
@@ -930,6 +999,24 @@ async def main():
                 print("       python libreshock.py sleep --off   (disable sleep tracking)")
             else:
                 await device.set_sleep_tracking(requested)
+        elif args.action == "handraise":
+            requested = None
+            if args.sleep_on: requested = True
+            elif args.sleep_off: requested = False
+            if requested is None:
+                print("Usage: python libreshock.py handraise --on [--hand left|right]")
+                print("                              [--wrist inside|outside]")
+                print("                              [--stim vibrate|beep|zap|countdown]")
+                print("                              [-i N]    (intensity, zap only)")
+                print("       python libreshock.py handraise --off")
+            else:
+                await device.set_hand_raise(
+                    enabled=requested,
+                    hand=args.hand,
+                    wrist=args.wrist,
+                    stimulus=args.stim,
+                    intensity=args.intensity,
+                )
         elif args.action == "battery":
             level = await device.read_battery()
             if level is None:

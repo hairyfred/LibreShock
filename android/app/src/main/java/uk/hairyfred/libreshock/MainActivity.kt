@@ -86,6 +86,7 @@ import uk.hairyfred.libreshock.ui.AlarmFiringDialog
 import uk.hairyfred.libreshock.ui.AlarmsScreen
 import uk.hairyfred.libreshock.ui.BatteryUsageScreen
 import uk.hairyfred.libreshock.ui.DeviceInfoScreen
+import uk.hairyfred.libreshock.ui.HandRaiseScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
 
 class MainActivity : ComponentActivity() {
@@ -267,6 +268,7 @@ fun AppRoot() {
         "alarm_edit" -> if (editingIndex == null) "New alarm" else "Edit alarm"
         "device_info" -> "Device info"
         "battery_usage" -> "Battery usage"
+        "hand_raise" -> "Hand raise detection"
         else -> "LibreShock"
     }
 
@@ -363,6 +365,11 @@ fun AppRoot() {
                 padding = padding,
             )
             "battery_usage" -> BatteryUsageScreen(device, batteryHistory, padding)
+            "hand_raise" -> HandRaiseScreen(
+                device = device,
+                padding = padding,
+                onSaved = { screen = "main" },
+            )
             else -> ConnectionFlow(
                 prefs = prefs,
                 device = device,
@@ -372,6 +379,7 @@ fun AppRoot() {
                 onOpenAlarms = { screen = "alarms" },
                 onOpenDeviceInfo = { screen = "device_info" },
                 onOpenBatteryUsage = { screen = "battery_usage" },
+                onOpenHandRaise = { screen = "hand_raise" },
             )
         }
     }
@@ -406,6 +414,7 @@ fun ConnectionFlow(
     onOpenAlarms: () -> Unit,
     onOpenDeviceInfo: () -> Unit,
     onOpenBatteryUsage: () -> Unit,
+    onOpenHandRaise: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -580,6 +589,7 @@ fun ConnectionFlow(
                 onAlarms = onOpenAlarms,
                 onDeviceInfo = onOpenDeviceInfo,
                 onBatteryUsage = onOpenBatteryUsage,
+                onHandRaise = onOpenHandRaise,
                 onDisconnect = {
                     device.disconnect()
                     isConnected = false
@@ -721,6 +731,7 @@ private fun ActionButtons(
     onAlarms: () -> Unit,
     onDeviceInfo: () -> Unit,
     onBatteryUsage: () -> Unit,
+    onHandRaise: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     var vibeIntensity by remember { mutableStateOf(50f) }
@@ -760,6 +771,9 @@ private fun ActionButtons(
                     onTrigger = { onZap(zapIntensity.toInt()) },
                 )
             }
+        }
+        FilledTonalButton(onClick = onHandRaise, modifier = Modifier.fillMaxWidth()) {
+            Text("Hand raise detection")
         }
         TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
             Text("Disconnect")

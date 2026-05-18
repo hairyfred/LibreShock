@@ -101,6 +101,40 @@ python libreshock.py info      # name, manufacturer, model, serial,
 python libreshock.py status    # current vibe/beep/zap/LED raw config bytes
 ```
 
+## Hand-raise detection
+
+The watch can detect when you raise your hand toward your face (e.g.
+when reaching for a phone or a snack) and trigger a stim. The vendor app
+exposes 4 settings: enable, which hand the device is worn on, whether
+it's strapped inside or outside the wrist, and the stimulus type.
+Only zap has a user-configurable intensity; the others fire at 30%.
+
+```
+# Enable hand-raise on the right wrist, outside-strap, vibrate on detection
+python libreshock.py handraise --on
+
+# Right wrist, inside-strap, zap at 60%
+python libreshock.py handraise --on --wrist inside --stim zap -i 60
+
+# Left wrist, outside, beep
+python libreshock.py handraise --on --hand left --stim beep
+
+# Countdown — watch counts down (via vibration / beep cues) then zaps.
+# Lowering your hand before time's up cancels the zap.
+python libreshock.py handraise --on --stim countdown
+
+# Disable
+python libreshock.py handraise --off
+```
+
+Flags:
+
+- `--hand left|right` — which wrist the watch is worn on (default `right`)
+- `--wrist inside|outside` — strap orientation (default `outside`)
+- `--stim vibrate|beep|zap|countdown` — what fires when a raise is detected
+  (default `vibrate`)
+- `-i, --intensity 0-100` — zap intensity (default 30, only applies to zap)
+
 ## Sleep tracking
 
 The watch can stream actigraphy data (raw accelerometer-derived motion

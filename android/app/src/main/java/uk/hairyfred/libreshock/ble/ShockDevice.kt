@@ -70,6 +70,12 @@ class ShockDevice(private val context: Context) {
         // firmware also accepts the same payload at the characteristic value.
         val CHAR_SLEEP_TRACKING: UUID = UUID.fromString("00000008-0000-1000-8000-00805f9b34fb")
 
+        // Hand-raise detection (service 156e1000, char 1006, user-desc "HD").
+        // 4-byte payload: [flags, 0x70, stim_type, intensity]
+        // flags: bit0=enabled, bits1+2 always set, bit3=inside-wrist, bit4=left-hand
+        // stim_type: 0=vibrate, 1=beep, 2=zap, 3=countdown
+        val CHAR_HAND_RAISE: UUID = UUID.fromString("00001006-0000-1000-8000-00805f9b34fb")
+
         // Standard Device Information Service (0x180A)
         val CHAR_MANUFACTURER: UUID = UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
         val CHAR_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
@@ -176,6 +182,15 @@ class ShockDevice(private val context: Context) {
     }
 
     val isConnected: Boolean get() = gatt != null
+
+    /** Read the watch's current hand-raise configuration. Returns the raw
+     *  4-byte payload (see [HandRaiseConfig.parse]) or null on read failure. */
+    suspend fun readHandRaise(): ByteArray? = readChar(CHAR_HAND_RAISE)
+
+    /** Write a new hand-raise configuration to the watch. */
+    suspend fun setHandRaise(config: HandRaiseConfig): Boolean = gattMutex.withLock {
+        writeChar(CHAR_HAND_RAISE, config.toBytes())
+    }
 
     /** Enable or disable automatic sleep tracking on the watch.
      *
@@ -495,6 +510,54 @@ sealed class ConnectionState {
     object Connected : ConnectionState()
     /** Connection dropped without a call to [ShockDevice.disconnect] — candidate for auto-reconnect. */
     object Lost : ConnectionState()
+}
+
+/** Hand-raise detection settings. Mirrors libreshock.py's set_hand_raise. */
+enum class HandRaiseStim(val byte: Int, val displayName: String) {
+    VIBRATE(0x00, "Vibrate"),
+    BEEP(0x01, "Beep"),
+    ZAP(0x02, "Zap"),
+    COUNTDOWN(0x03, "Countdown");
+
+    companion object {
+        fun fromByte(b: Int): HandRaiseStim =
+            entries.firstOrNull { it.byte == b } ?: VIBRATE
+    }
+}
+
+data class HandRaiseConfig(
+    val enabled: Boolean = false,
+    val leftHand: Boolean = false,    // false = right
+    val insideWrist: Boolean = false, // false = outside
+    val stimulus: HandRaiseStim = HandRaiseStim.VIBRATE,
+    val intensity: Int = 30,          // 0-100; only meaningful for ZAP
+) {
+    fun toBytes(): ByteArray {
+        var flags = 0x06  // bits 1+2 always set per observed protocol
+        if (enabled) flags = flags or 0x01
+        if (insideWrist) flags = flags or 0x08
+        if (leftHand) flags = flags or 0x10
+        return byteArrayOf(
+            flags.toByte(),
+            0x70.toByte(),
+            stimulus.byte.toByte(),
+            intensity.coerceIn(0, 100).toByte(),
+        )
+    }
+
+    companion object {
+        fun parse(bytes: ByteArray?): HandRaiseConfig {
+            if (bytes == null || bytes.size < 4) return HandRaiseConfig()
+            val flags = bytes[0].toInt() and 0xFF
+            return HandRaiseConfig(
+                enabled = (flags and 0x01) != 0,
+                insideWrist = (flags and 0x08) != 0,
+                leftHand = (flags and 0x10) != 0,
+                stimulus = HandRaiseStim.fromByte(bytes[2].toInt() and 0xFF),
+                intensity = bytes[3].toInt() and 0xFF,
+            )
+        }
+    }
 }
 
 /** Snapshot of everything ShockDevice.readDeviceInfo() returns. */
