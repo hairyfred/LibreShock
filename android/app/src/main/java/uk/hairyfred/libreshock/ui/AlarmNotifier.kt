@@ -48,6 +48,7 @@ object AlarmNotifier {
         alarmId: Int,
         requiresQrScan: Boolean = false,
         requiresPuzzle: Boolean = false,
+        snoozeAllowed: Boolean = true,
     ) {
         ensureChannel(context)
         val nm = context.getSystemService<NotificationManager>() ?: return
@@ -90,7 +91,8 @@ object AlarmNotifier {
             requiresPuzzle -> builder.addAction(0, "Open to solve", openPi)
             else -> builder.addAction(0, "Stop", stopPi)
         }
-        builder.addAction(0, "Snooze", snoozePi)
+        // Only offer the Snooze action when the alarm actually allows snoozing.
+        if (snoozeAllowed) builder.addAction(0, "Snooze", snoozePi)
 
         nm.notify(NOTIFICATION_ID, builder.build())
     }

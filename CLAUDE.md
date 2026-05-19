@@ -224,9 +224,11 @@ Tags appear in this order: AN, TM, WD, WI, SN, AO, then any of MH/PH/ZH
 | `TM` | 4 | `[0x00, minute_bcd, hour_bcd, 0x80\|day_mask]` | Time (BCD) and repeat-day mask. flag=0x00 for stored templates that aren't actively armed. |
 | `WD` | 1 | `0x1E` | Constant in all observed vendor packets; not the day mask |
 | `WI` | 2 | uint16_le | Stimulus interval (seconds) |
-| `SN` | 1 | 0/1 | Snooze enabled |
-| `AO` | 1 | bitfield | Alarm on/enabled + guarantor task (see below) |
+| `SN` | 1 | bitfield | Snooze flags. bit 0 (`0x01`) = snooze enabled. bit 1 (`0x02`) = "Snooze Zap" (zap when the user snoozes). |
+| `AO` | 1 | bitfield | Alarm on/enabled + guarantor task + additional wake-up features (see below) |
 | `JL` | 1 | 1-20 | Jumping-Jacks rep count (present only when AO has the JJ bit set) |
+| `ES` | 1 | `0x05` (vendor const) | Escalating Alarm config. Vendor app exposes no slider — always emits the same byte. Present only when AO bit `0x20` is set. |
+| `SM` | 3 | `0f 05 06` (vendor const) | Smart Alarm config. Vendor app exposes no sliders — always emits the same 3 bytes (likely `[expiry?, recheck_min, ?]` matching "5 min recheck / 30 min total" defaults). Present only when AO bit `0x40` is set. |
 | `MH` | 9 | contains MC | Vibration Habit (omitted when vibe disabled) |
 | `MC` | 5 | `[flags, count, intensity, 0xfa, 0xfa]` | Vibration config |
 | `PH` | 9 | contains PC | Beep Habit (omitted when beep disabled) |
@@ -240,18 +242,34 @@ Tags appear in this order: AN, TM, WD, WI, SN, AO, then any of MH/PH/ZH
 The vendor app's "Wake up on time" screen offers one of three guarantor
 tasks. Each gets its own bit in the AO byte:
 
-| AO value | Meaning |
-|----------|---------|
-| `0x00` | Alarm disabled |
-| `0x01` | Armed, no task |
-| `0x02` | Armed + **Jumping Jacks** (also adds `JL` TLV with rep count, 1-20) |
-| `0x04` | Armed + **QR code scan** (no extra TLV) |
-| `0x80` | Armed + **Puzzle unlock** (no extra TLV) |
+The AO byte is a bitfield. Bits 0-2 and bit 7 are mutually-exclusive
+guarantor tasks (only one set at a time); bits 3, 5, 6 are independent
+"additional wake-up feature" flags that can be combined freely.
 
-Tasks are presented as a radio choice in the UI, so only one bit is set at
-a time. Decoded May 19 2026 from 3 jumping-jacks captures (1/2/3 reps),
-1 QR capture, and 1 puzzle capture. Verified byte-exact in scripts/verify_combos.py
-and AlarmProtocolTest.kt.
+| AO bit | Meaning |
+|--------|---------|
+| `0x00` | Alarm disabled (whole byte = 0) |
+| `0x01` | Armed, no guarantor task |
+| `0x02` | Armed + **Jumping Jacks** guarantor (also adds `JL` TLV, rep count 1-20) |
+| `0x04` | Armed + **QR code scan** guarantor (no extra TLV) |
+| `0x08` | **Light Sleep** — watch monitors actigraphy and may fire up to 20 min early during light sleep |
+| `0x10` | unobserved (no vendor toggle maps to this bit) |
+| `0x20` | **Escalating Alarm** — stim intensity ramps up over time; also adds `ES` TLV |
+| `0x40` | **Smart Alarm** — re-arms after dismiss if no motion detected; also adds `SM` TLV |
+| `0x80` | Armed + **Puzzle unlock** guarantor (no extra TLV) |
+
+Guarantor tasks are presented as a radio choice in the UI; the additional
+feature bits are separate toggles. Decoded May 19 2026 from:
+- 3 jumping-jacks captures (1/2/3 reps), 1 QR, 1 puzzle (guarantors)
+- 1 isolated capture each for Snooze Zap, Disable Snooze, Light Sleep,
+  Escalating Alarm, Smart Alarm (additional features)
+
+All verified byte-exact in `scripts/verify_combos.py` and `AlarmProtocolTest.kt`.
+
+The "Disable Snooze" toggle in the vendor "Additional wake-up features"
+screen is **equivalent to clearing SN bit 0** — same wire effect as
+flipping the regular alarm-edit Snooze switch off. Two UI paths to the
+same byte, not two separate features.
 
 ### Stim Combination → HA length byte (observed)
 

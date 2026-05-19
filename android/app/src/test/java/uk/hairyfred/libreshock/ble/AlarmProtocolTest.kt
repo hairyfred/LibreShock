@@ -285,6 +285,132 @@ class AlarmProtocolTest {
         assertEquals(15, parsed[0].jumpingJacksCount)
     }
 
+    // Additional wake-up features — May 19 2026 captures, each isolated to
+    // exactly one toggle on the 13:47 vibe+beep+zap test alarm.
+    @Test
+    fun snoozeZapSetsSnBit2() {
+        val captured = hexToBytes(
+            "48415000414e0500616c61726d544d040000471380574401001e574902000f00" +
+            "534e010003414f0100014d4809004d430500850c32fafa5048090050430500" +
+            "850c32fafa5a4806005a4302008132494402000300"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 13, minute = 47, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = true, count = 5, intensity = 50),
+                zap = AlarmAction(enabled = true, count = 1, intensity = 50),
+                snoozeZap = true,
+            ),
+            alarmId = 3,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun disableSnoozeClearsSnBit0() {
+        val captured = hexToBytes(
+            "48415000414e0500616c61726d544d040000471380574401001e574902000f00" +
+            "534e010000414f0100014d4809004d430500850c32fafa5048090050430500" +
+            "850c32fafa5a4806005a4302008132494402000300"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 13, minute = 47, name = "alarm",
+                weekdays = 0, snooze = false, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = true, count = 5, intensity = 50),
+                zap = AlarmAction(enabled = true, count = 1, intensity = 50),
+            ),
+            alarmId = 3,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun lightSleepSetsAoBit3() {
+        val captured = hexToBytes(
+            "48415000414e0500616c61726d544d040000471380574401001e574902000f00" +
+            "534e010001414f0100094d4809004d430500850c32fafa5048090050430500" +
+            "850c32fafa5a4806005a4302008132494402000400"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 13, minute = 47, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = true, count = 5, intensity = 50),
+                zap = AlarmAction(enabled = true, count = 1, intensity = 50),
+                lightSleep = true,
+            ),
+            alarmId = 4,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun escalatingAddsEsTlv() {
+        val captured = hexToBytes(
+            "48415500414e0500616c61726d544d040000471380574401001e574902000f00" +
+            "534e010001414f01002145530100054d4809004d430500850c32fafa504809" +
+            "0050430500850c32fafa5a4806005a4302008132494402000400"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 13, minute = 47, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = true, count = 5, intensity = 50),
+                zap = AlarmAction(enabled = true, count = 1, intensity = 50),
+                escalating = true,
+            ),
+            alarmId = 4,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun smartAlarmAddsSmTlv() {
+        val captured = hexToBytes(
+            "48415700414e0500616c61726d544d040000471380574401001e574902000f00" +
+            "534e010001414f010041534d03000f05064d4809004d430500850c32fafa50" +
+            "48090050430500850c32fafa5a4806005a4302008132494402000400"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 13, minute = 47, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = true, count = 5, intensity = 50),
+                zap = AlarmAction(enabled = true, count = 1, intensity = 50),
+                smartAlarm = true,
+            ),
+            alarmId = 4,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun additionalFeaturesRoundtrip() {
+        val pkt = buildAlarmPacket(listOf(
+            AlarmConfig(
+                hour = 7, minute = 30, name = "morning",
+                weekdays = Weekday.EVERYDAY,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 80),
+                snooze = true, snoozeZap = true,
+                lightSleep = true, escalating = true, smartAlarm = true,
+            ),
+        ))
+        val parsed = parseAlarms(pkt)
+        assertEquals(1, parsed.size)
+        assertEquals(true, parsed[0].snoozeZap)
+        assertEquals(true, parsed[0].lightSleep)
+        assertEquals(true, parsed[0].escalating)
+        assertEquals(true, parsed[0].smartAlarm)
+        assertEquals(Guarantor.NONE, parsed[0].guarantor)
+    }
+
     @Test
     fun crc16IsCcittFalse() {
         // CRC of "123456789" is 0x29B1 for CRC-16/CCITT-FALSE.

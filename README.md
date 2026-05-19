@@ -26,6 +26,8 @@ Two interfaces:
   watch), [QR code scan](docs/images/libreshock-qr.png), or Puzzle unlock
   (memory grid or arithmetic equation, randomly picked; toggleable in
   Settings)
+- Stack any combination of the watch's "Additional wake-up features"
+  on any alarm — Snooze Zap, Light Sleep, Escalating Alarm, Smart Alarm
 - Stop or snooze a currently-firing alarm from the phone / desktop
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity

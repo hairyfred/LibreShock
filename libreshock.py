@@ -29,6 +29,21 @@ class Guarantor:
     PUZZLE = 0x80
 
 
+# Additional wake-up features. Each is an independent bit in either the SN
+# byte or the AO byte. Two of them (Escalating + Smart Alarm) also emit a
+# new TLV with the watch's hardcoded default config block (no UI exposes
+# the byte values, so they're always the same).
+SN_FLAG_SNOOZE_ZAP = 0x02
+AO_FLAG_LIGHT_SLEEP = 0x08
+AO_FLAG_ESCALATING = 0x20
+AO_FLAG_SMART_ALARM = 0x40
+
+# Hardcoded default ES / SM TLV bodies the vendor app writes — same bytes
+# regardless of UI state because neither feature exposes any sliders.
+ES_DEFAULT_BODY = bytes([0x05])
+SM_DEFAULT_BODY = bytes([0x0f, 0x05, 0x06])
+
+
 # Weekday constants for alarm repeat days
 class Weekday:
     SUNDAY = 0x01
@@ -73,6 +88,13 @@ class AlarmConfig:
     # Required jumps for the Jumping Jacks guarantor (1-N). Ignored for
     # other guarantor types.
     jumping_jacks_count: int = 1
+
+    # "Additional wake-up features" from the vendor app — independent
+    # flags that can each be on or off alongside any guarantor.
+    snooze_zap: bool = False   # zap when user snoozes
+    light_sleep: bool = False  # fire up to 20 min early when actigraphy detects light sleep
+    escalating: bool = False   # ramp stim intensity until the user wakes
+    smart_alarm: bool = False  # re-arm if no motion 5 min after dismiss (30 min total)
 
     def weekday_names(self) -> List[str]:
         """Return list of day names this alarm repeats on"""
@@ -312,10 +334,29 @@ def _build_alarm_hac_block(config: AlarmConfig, alarm_id: int) -> bytes:
     # The actual repeat-day mask lives in TM byte 3.
     wd_block = _tlv(b'WD', bytes([0x1E]))
     wi_block = _tlv(b'WI', struct.pack('<H', config.stimulus_interval))
-    sn_block = _tlv(b'SN', bytes([0x01 if config.snooze else 0x00]))
-    # AO encodes both the enable bit and the guarantor task. When disabled
-    # we send 0x00; otherwise the value is the Guarantor bit (NONE=0x01).
-    ao_value = config.guarantor if config.enabled else 0x00
+    # SN is a 2-bit field: bit 0 = snooze enabled, bit 1 = Snooze Zap.
+    # Snooze Zap requires snooze to be enabled to actually fire — we mirror
+    # the vendor app behavior and only set bit 1 when bit 0 is also set.
+    sn_value = 0
+    if config.snooze:
+        sn_value |= 0x01
+        if config.snooze_zap:
+            sn_value |= SN_FLAG_SNOOZE_ZAP
+    sn_block = _tlv(b'SN', bytes([sn_value]))
+
+    # AO encodes the armed bit, the guarantor task, and the additional
+    # wake-up feature flags. When disabled the whole byte is 0; otherwise
+    # we OR the guarantor bit with the feature flags.
+    if config.enabled:
+        ao_value = config.guarantor
+        if config.light_sleep:
+            ao_value |= AO_FLAG_LIGHT_SLEEP
+        if config.escalating:
+            ao_value |= AO_FLAG_ESCALATING
+        if config.smart_alarm:
+            ao_value |= AO_FLAG_SMART_ALARM
+    else:
+        ao_value = 0x00
     ao_block = _tlv(b'AO', bytes([ao_value]))
     id_block = _tlv(b'ID', struct.pack('<H', alarm_id))
 
@@ -325,6 +366,15 @@ def _build_alarm_hac_block(config: AlarmConfig, alarm_id: int) -> bytes:
     if config.enabled and config.guarantor == Guarantor.JUMPING_JACKS:
         jl_count = max(1, min(config.jumping_jacks_count, 20))
         content += _tlv(b'JL', bytes([jl_count]))
+    # Escalating Alarm adds an ES TLV between AO/JL and MH. Vendor app
+    # ships a hardcoded body — no UI sliders for it.
+    if config.enabled and config.escalating:
+        content += _tlv(b'ES', ES_DEFAULT_BODY)
+    # Smart Alarm adds an SM TLV in the same position. Body is also
+    # hardcoded — the vendor's "5 min recheck / 30 min expiry" defaults
+    # appear to be baked in here without a UI override.
+    if config.enabled and config.smart_alarm:
+        content += _tlv(b'SM', SM_DEFAULT_BODY)
     if config.vibration.enabled:
         content += _tlv(b'MH', _build_mc_block(config))
     if config.beep.enabled:
@@ -850,19 +900,27 @@ class ShockDevice:
             if wi_pos >= 0 and wi_pos + 6 <= len(block):
                 config.stimulus_interval = block[wi_pos + 4] | (block[wi_pos + 5] << 8)
 
-            # Parse SN (Snooze)
+            # Parse SN (Snooze + Snooze Zap). 2-bit field.
             sn_pos = block.find(b'SN')
             if sn_pos >= 0 and sn_pos + 5 <= len(block):
-                config.snooze = block[sn_pos + 4] != 0
+                sn_byte = block[sn_pos + 4]
+                config.snooze = (sn_byte & 0x01) != 0
+                config.snooze_zap = (sn_byte & SN_FLAG_SNOOZE_ZAP) != 0
 
-            # Parse AO (Alarm On/Enabled + Guarantor task). The byte is
-            # either 0 (off) or one of the Guarantor.* bit values
-            # (0x01=none, 0x02=jjacks, 0x04=qr, 0x80=puzzle).
+            # Parse AO (Alarm On/Enabled + Guarantor task + feature flags).
+            # Mask off the additional-feature bits before resolving the
+            # guarantor, since those bits live in the same byte.
             ao_pos = block.find(b'AO')
             if ao_pos >= 0 and ao_pos + 5 <= len(block):
                 ao_byte = block[ao_pos + 4]
                 config.enabled = ao_byte != 0
-                config.guarantor = ao_byte if ao_byte != 0 else Guarantor.NONE
+                config.light_sleep = (ao_byte & AO_FLAG_LIGHT_SLEEP) != 0
+                config.escalating = (ao_byte & AO_FLAG_ESCALATING) != 0
+                config.smart_alarm = (ao_byte & AO_FLAG_SMART_ALARM) != 0
+                guarantor_bits = ao_byte & ~(
+                    AO_FLAG_LIGHT_SLEEP | AO_FLAG_ESCALATING | AO_FLAG_SMART_ALARM
+                )
+                config.guarantor = guarantor_bits if guarantor_bits != 0 else Guarantor.NONE
 
             # Parse JL (Jumping-Jacks count) — only present when guarantor=JJ.
             jl_pos = block.find(b'JL')
@@ -959,6 +1017,13 @@ def _print_alarm(idx: int, cfg: AlarmConfig):
     }
     if cfg.guarantor != Guarantor.NONE:
         print(f"    Guarantor: {guarantor_names.get(cfg.guarantor, f'unknown 0x{cfg.guarantor:02x}')}")
+    extras = []
+    if cfg.snooze_zap: extras.append("Snooze Zap")
+    if cfg.light_sleep: extras.append("Light Sleep")
+    if cfg.escalating: extras.append("Escalating")
+    if cfg.smart_alarm: extras.append("Smart Alarm")
+    if extras:
+        print(f"    Wake-up features: {', '.join(extras)}")
 
 
 def print_help():
@@ -1193,6 +1258,17 @@ async def main():
     parser.add_argument("--jjacks", type=int, default=5,
                         help="Required Jumping-Jacks reps when --guarantor=jjacks (1-20, default: 5)")
 
+    # Additional wake-up feature flags. Each is independent; can be combined
+    # with any guarantor.
+    parser.add_argument("--snooze-zap", dest="snooze_zap", action="store_true",
+                        help="Give a zap when the alarm is snoozed (requires --snooze)")
+    parser.add_argument("--light-sleep", dest="light_sleep", action="store_true",
+                        help="Watch monitors actigraphy and fires up to 20 min early if you're in light sleep")
+    parser.add_argument("--escalating", action="store_true",
+                        help="Stim intensity ramps up over time until you wake or hit the cap")
+    parser.add_argument("--smart-alarm", dest="smart_alarm", action="store_true",
+                        help="After dismiss, watch re-arms if it detects no motion (~5 min default, ~30 min total)")
+
     # Sleep-tracking + hand-raise shared on/off flags
     parser.add_argument("--on", dest="sleep_on", action="store_true",
                         help="With 'sleep'/'handraise' action: turn the feature on")
@@ -1382,6 +1458,10 @@ async def main():
                                 stimulus_interval=args.interval,
                                 vibration=vibe_action, beep=beep_action, zap=zap_action,
                                 guarantor=guarantor, jumping_jacks_count=args.jjacks,
+                                snooze_zap=args.snooze_zap,
+                                light_sleep=args.light_sleep,
+                                escalating=args.escalating,
+                                smart_alarm=args.smart_alarm,
                             )
                             alarm_list.append(new_alarm)
                         except ValueError:
@@ -1407,6 +1487,10 @@ async def main():
                                 stimulus_interval=args.interval,
                                 vibration=vibe_action, beep=beep_action, zap=zap_action,
                                 guarantor=guarantor, jumping_jacks_count=args.jjacks,
+                                snooze_zap=args.snooze_zap,
+                                light_sleep=args.light_sleep,
+                                escalating=args.escalating,
+                                smart_alarm=args.smart_alarm,
                             )
                             alarm_list.append(new_alarm)
                         except ValueError:

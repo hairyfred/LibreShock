@@ -25,6 +25,15 @@ enum class Guarantor(val aoBit: Int, val displayName: String) {
     }
 }
 
+/** Additional wake-up feature flags. Each is an independent bit in either
+ *  the SN byte or the AO byte; can be combined with any guarantor. */
+internal const val SN_FLAG_SNOOZE_ZAP = 0x02
+internal const val AO_FLAG_LIGHT_SLEEP = 0x08
+internal const val AO_FLAG_ESCALATING = 0x20
+internal const val AO_FLAG_SMART_ALARM = 0x40
+internal val ES_DEFAULT_BODY = byteArrayOf(0x05)
+internal val SM_DEFAULT_BODY = byteArrayOf(0x0f, 0x05, 0x06)
+
 /** Weekday bitmask values for AlarmConfig.weekdays. */
 object Weekday {
     const val SUNDAY = 0x01
@@ -64,6 +73,17 @@ data class AlarmConfig(
     val guarantor: Guarantor = Guarantor.NONE,
     /** Required reps for Guarantor.JUMPING_JACKS (1-20). Ignored otherwise. */
     val jumpingJacksCount: Int = 5,
+    /** Zap when the user snoozes the alarm. Requires [snooze] = true to do
+     *  anything; the vendor app keeps both bits in the SN byte. */
+    val snoozeZap: Boolean = false,
+    /** Watch monitors actigraphy and may fire up to 20 min early during
+     *  detected light sleep. Phone-side schedules the early window. */
+    val lightSleep: Boolean = false,
+    /** Stim intensity ramps up over time until the user wakes or hits the cap. */
+    val escalating: Boolean = false,
+    /** After dismiss, watch re-arms if it detects no motion (~5 min default,
+     *  ~30 min total per vendor description). */
+    val smartAlarm: Boolean = false,
 )
 
 private const val MC_FLAG_ENABLED = 0x80
@@ -158,11 +178,24 @@ internal fun buildAlarmBlock(config: AlarmConfig, alarmId: Int): ByteArray {
     // WD is a device constant in all observed vendor packets.
     val wd = tlv("WD", byteArrayOf(0x1E))
     val wi = tlv("WI", u16Le(config.stimulusInterval))
-    val sn = tlv("SN", byteArrayOf(if (config.snooze) 0x01 else 0x00))
-    // AO encodes both the enable bit and the guarantor task. NONE.aoBit=0x01
-    // gives us the legacy "armed, no task" value; other guarantors use their
-    // own bit. Disabled alarms send 0x00.
-    val aoValue = if (config.enabled) config.guarantor.aoBit else 0x00
+    // SN is a 2-bit field: bit 0 = snooze enabled, bit 1 = Snooze Zap.
+    // Snooze Zap requires snooze enabled to fire — we mirror the vendor app
+    // and only set bit 1 when bit 0 is also set.
+    var snValue = 0
+    if (config.snooze) {
+        snValue = snValue or 0x01
+        if (config.snoozeZap) snValue = snValue or SN_FLAG_SNOOZE_ZAP
+    }
+    val sn = tlv("SN", byteArrayOf(snValue.toByte()))
+    // AO encodes the armed/guarantor bits plus the additional wake-up feature
+    // flags. Disabled alarms send 0x00.
+    val aoValue = if (config.enabled) {
+        var v = config.guarantor.aoBit
+        if (config.lightSleep) v = v or AO_FLAG_LIGHT_SLEEP
+        if (config.escalating) v = v or AO_FLAG_ESCALATING
+        if (config.smartAlarm) v = v or AO_FLAG_SMART_ALARM
+        v
+    } else 0x00
     val ao = tlv("AO", byteArrayOf(aoValue.toByte()))
     val id = tlv("ID", u16Le(alarmId))
 
@@ -173,6 +206,11 @@ internal fun buildAlarmBlock(config: AlarmConfig, alarmId: Int): ByteArray {
         val reps = config.jumpingJacksCount.coerceIn(1, 20)
         content += tlv("JL", byteArrayOf(reps.toByte()))
     }
+    // Escalating Alarm + Smart Alarm each emit a TLV with a hardcoded body
+    // (the vendor app exposes no sliders for either). Order vs JL is
+    // unobserved in captures; mirroring Python's order here.
+    if (config.enabled && config.escalating) content += tlv("ES", ES_DEFAULT_BODY)
+    if (config.enabled && config.smartAlarm) content += tlv("SM", SM_DEFAULT_BODY)
     if (config.vibration.enabled) content += tlv("MH", buildMcBlock(config))
     if (config.beep.enabled) content += tlv("PH", buildPcBlock(config))
     if (config.zap.enabled) content += tlv("ZH", buildZcBlock(config))
@@ -289,6 +327,10 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
     var hasZap = false
     var guarantor = Guarantor.NONE
     var jumpingJacksCount = 5
+    var snoozeZap = false
+    var lightSleep = false
+    var escalating = false
+    var smartAlarm = false
 
     var p = start
     while (p + 4 <= end) {
@@ -306,11 +348,21 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
                 dayMask = buf[valStart + 3].toInt() and 0x7F
             }
             "WI" -> if (len == 2) stimulusInterval = u16LeAt(buf, valStart)
-            "SN" -> if (len >= 1) snooze = buf[valStart].toInt() != 0
+            "SN" -> if (len >= 1) {
+                val snByte = buf[valStart].toInt() and 0xFF
+                snooze = (snByte and 0x01) != 0
+                snoozeZap = (snByte and SN_FLAG_SNOOZE_ZAP) != 0
+            }
             "AO" -> if (len >= 1) {
                 val aoByte = buf[valStart].toInt() and 0xFF
                 enabled = aoByte != 0
-                guarantor = if (aoByte == 0) Guarantor.NONE else Guarantor.fromAo(aoByte)
+                lightSleep = (aoByte and AO_FLAG_LIGHT_SLEEP) != 0
+                escalating = (aoByte and AO_FLAG_ESCALATING) != 0
+                smartAlarm = (aoByte and AO_FLAG_SMART_ALARM) != 0
+                val guarantorBits = aoByte and
+                    (AO_FLAG_LIGHT_SLEEP or AO_FLAG_ESCALATING or AO_FLAG_SMART_ALARM).inv()
+                guarantor = if (guarantorBits == 0) Guarantor.NONE
+                            else Guarantor.fromAo(guarantorBits and 0xFF)
             }
             "JL" -> if (len >= 1) jumpingJacksCount = buf[valStart].toInt() and 0xFF
             "MH" -> findTagWithin(buf, valStart, valEnd, "MC")?.let { (vs, _) ->
@@ -349,6 +401,10 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
               else AlarmAction(enabled = false),
         guarantor = guarantor,
         jumpingJacksCount = jumpingJacksCount,
+        snoozeZap = snoozeZap,
+        lightSleep = lightSleep,
+        escalating = escalating,
+        smartAlarm = smartAlarm,
     )
 }
 

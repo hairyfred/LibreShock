@@ -94,10 +94,25 @@ Alarm flags:
 - `--jjacks N` — required Jumping-Jacks reps when `--guarantor=jjacks`
   (1-20, default 5)
 - `-n, --name "Wake up"` — friendly name for the alarm
+- `--snooze-zap` — give the watch a zap when the user snoozes the alarm
+  (requires `--snooze` to be on; otherwise the bit gets cleared by the
+  encoder)
+- `--light-sleep` — watch starts actigraphy 20 min before the alarm and
+  fires up to 20 min early if it detects light sleep
+- `--escalating` — stim intensity ramps up over time until you wake or
+  hit the cap
+- `--smart-alarm` — after dismiss, watch re-arms if it detects no
+  motion (~5 min default re-fire, ~30 min total). Vendor app exposes
+  no slider for the timing values, so the CLI sends the same bytes
+  the Pavlok app does.
 
 ```
 # 7am alarm that requires 10 jumping jacks to stop
 python libreshock.py alarm -t 7:00 --vibe 60 --zap 40 --guarantor jjacks --jjacks 10
+
+# Mean wake-up: zap on snooze + escalating intensity + smart-alarm re-fire
+python libreshock.py alarm -t 7:00 --vibe 50 --zap 50 \
+    --snooze-zap --escalating --smart-alarm
 ```
 
 ## Stop / snooze a firing alarm

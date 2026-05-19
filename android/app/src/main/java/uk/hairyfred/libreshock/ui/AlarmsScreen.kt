@@ -220,6 +220,10 @@ private fun stimSummary(alarm: AlarmConfig): String {
             Guarantor.PUZZLE -> add("puzzle")
             Guarantor.NONE -> {}
         }
+        if (alarm.snoozeZap) add("snooze-zap")
+        if (alarm.lightSleep) add("light-sleep")
+        if (alarm.escalating) add("escalating")
+        if (alarm.smartAlarm) add("smart")
     }
     return if (parts.isEmpty()) "(no stims)" else parts.joinToString(" • ")
 }
@@ -268,6 +272,15 @@ fun AlarmEditScreen(
     }
     var guarantorExpanded by remember { mutableStateOf(starting.guarantor != Guarantor.NONE) }
 
+    var snoozeZap by remember { mutableStateOf(starting.snoozeZap) }
+    var lightSleep by remember { mutableStateOf(starting.lightSleep) }
+    var escalating by remember { mutableStateOf(starting.escalating) }
+    var smartAlarm by remember { mutableStateOf(starting.smartAlarm) }
+    var wakeFeaturesExpanded by remember {
+        mutableStateOf(starting.snoozeZap || starting.lightSleep ||
+                       starting.escalating || starting.smartAlarm)
+    }
+
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showTimeDialog by remember { mutableStateOf(false) }
@@ -282,6 +295,12 @@ fun AlarmEditScreen(
         zap = AlarmAction(enabled = zapOn, count = zapCount.toInt().coerceIn(1, 15), intensity = zapIntensity.toInt()),
         guarantor = guarantor,
         jumpingJacksCount = jjacksCount.toInt().coerceIn(1, 20),
+        // Snooze Zap only meaningful when Snooze is on; auto-disable otherwise
+        // so the bit doesn't get stuck on after the user turns snooze off.
+        snoozeZap = snooze && snoozeZap,
+        lightSleep = lightSleep,
+        escalating = escalating,
+        smartAlarm = smartAlarm,
     )
 
     suspend fun saveAndExit() {
@@ -416,6 +435,16 @@ fun AlarmEditScreen(
             jjacksCount = jjacksCount,
             onJjacksCountChange = { jjacksCount = it },
             onViewQrCode = { showQrDialog = true },
+        )
+
+        WakeFeaturesCard(
+            expanded = wakeFeaturesExpanded,
+            onExpandToggle = { wakeFeaturesExpanded = !wakeFeaturesExpanded },
+            snoozeZap = snoozeZap, onSnoozeZapChange = { snoozeZap = it },
+            snoozeAllowed = snooze,
+            lightSleep = lightSleep, onLightSleepChange = { lightSleep = it },
+            escalating = escalating, onEscalatingChange = { escalating = it },
+            smartAlarm = smartAlarm, onSmartAlarmChange = { smartAlarm = it },
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -558,6 +587,97 @@ private fun GuarantorCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WakeFeaturesCard(
+    expanded: Boolean,
+    onExpandToggle: () -> Unit,
+    snoozeZap: Boolean, onSnoozeZapChange: (Boolean) -> Unit,
+    snoozeAllowed: Boolean,
+    lightSleep: Boolean, onLightSleepChange: (Boolean) -> Unit,
+    escalating: Boolean, onEscalatingChange: (Boolean) -> Unit,
+    smartAlarm: Boolean, onSmartAlarmChange: (Boolean) -> Unit,
+) {
+    val enabledCount = listOf(
+        snoozeZap && snoozeAllowed, lightSleep, escalating, smartAlarm,
+    ).count { it }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onExpandToggle),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Additional wake-up features", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (enabledCount == 0) "None enabled"
+                        else "$enabledCount enabled",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                )
+            }
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                WakeFeatureRow(
+                    label = "Snooze Zap",
+                    description = if (snoozeAllowed)
+                        "Zap when you snooze the alarm"
+                    else "Requires Snooze to be enabled above",
+                    checked = snoozeZap && snoozeAllowed,
+                    onCheckedChange = onSnoozeZapChange,
+                    enabled = snoozeAllowed,
+                )
+                WakeFeatureRow(
+                    label = "Light Sleep",
+                    description = "Watch may fire up to 20 min early if it detects light sleep",
+                    checked = lightSleep,
+                    onCheckedChange = onLightSleepChange,
+                )
+                WakeFeatureRow(
+                    label = "Escalating alarm",
+                    description = "Stim intensity ramps up until you wake or hit the cap",
+                    checked = escalating,
+                    onCheckedChange = onEscalatingChange,
+                )
+                WakeFeatureRow(
+                    label = "Smart alarm",
+                    description = "After dismiss, re-arm if you stop moving — 5 min default, 30 min total",
+                    checked = smartAlarm,
+                    onCheckedChange = onSmartAlarmChange,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WakeFeatureRow(
+    label: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .alpha(if (enabled) 1f else 0.5f),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            Text(description, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 

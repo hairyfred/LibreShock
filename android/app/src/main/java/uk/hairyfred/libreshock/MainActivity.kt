@@ -163,6 +163,7 @@ fun AppRoot() {
     // (since scanning needs the camera) instead of stopping directly.
     var firingRequiresQrScan by remember { mutableStateOf(false) }
     var firingRequiresPuzzle by remember { mutableStateOf(false) }
+    var firingSnoozeAllowed by remember { mutableStateOf(true) }
     var confettiParties by remember { mutableStateOf<List<Party>>(emptyList()) }
 
     fun celebrate(relX: Float = 0.5f, relY: Float = 0.5f) {
@@ -183,19 +184,25 @@ fun AppRoot() {
                     val g = firingAlarm?.guarantor
                     val qrGuarded = g == uk.hairyfred.libreshock.ble.Guarantor.QR_CODE
                     val puzzleGuarded = g == uk.hairyfred.libreshock.ble.Guarantor.PUZZLE
+                    // Default to allowing snooze if we don't know — safer to
+                    // surface the option than to hide it incorrectly.
+                    val snoozeOk = firingAlarm?.snooze ?: true
                     firingAlarmId = event.alarmId
                     firingRequiresQrScan = qrGuarded
                     firingRequiresPuzzle = puzzleGuarded
+                    firingSnoozeAllowed = snoozeOk
                     AlarmNotifier.notifyFiring(
                         context, event.alarmId,
                         requiresQrScan = qrGuarded,
                         requiresPuzzle = puzzleGuarded,
+                        snoozeAllowed = snoozeOk,
                     )
                 }
                 NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> {
                     firingAlarmId = null
                     firingRequiresQrScan = false
                     firingRequiresPuzzle = false
+                    firingSnoozeAllowed = true
                     AlarmNotifier.cancel(context)
                 }
             }
@@ -560,6 +567,7 @@ fun AppRoot() {
             alarmId = id,
             requiresQrScan = firingRequiresQrScan,
             requiresPuzzle = firingRequiresPuzzle,
+            snoozeAllowed = firingSnoozeAllowed,
             onStop = { origin ->
                 rootScope.launch {
                     val ok = device.stopAlarm()
@@ -850,16 +858,6 @@ private fun SettingsScreen(
             },
         )
         SettingRow(
-            label = "Enable debug logging",
-            description = "Write verbose BLE read/write traces to logcat. View via `adb logcat -s ShockDevice`. Off by default.",
-            checked = debugLogging,
-            onCheckedChange = {
-                debugLogging = it
-                prefs.edit { putBoolean("debug_logging", it) }
-                uk.hairyfred.libreshock.ble.DebugLog.enabled = it
-            },
-        )
-        SettingRow(
             label = "Automatic sleep tracking",
             description = "Tells the watch to start/stop streaming sleep-tracking data. Time-range scheduling lives in the official Pavlok app — toggling here may blank its time range until you re-set it.",
             checked = sleepTracking,
@@ -942,6 +940,17 @@ private fun SettingsScreen(
                 }
             }
         }
+
+        SettingRow(
+            label = "Enable debug logging",
+            description = "Write verbose BLE read/write traces to logcat. View via `adb logcat -s ShockDevice`. Off by default.",
+            checked = debugLogging,
+            onCheckedChange = {
+                debugLogging = it
+                prefs.edit { putBoolean("debug_logging", it) }
+                uk.hairyfred.libreshock.ble.DebugLog.enabled = it
+            },
+        )
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {

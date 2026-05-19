@@ -134,6 +134,57 @@ CASES = [
              guarantor=Guarantor.PUZZLE),
         2,
     ),
+    # Additional wake-up features (May 19 2026 captures, isolated one at a time).
+    # Test alarm: 13:47, vibe+beep+zap (50/50/50 intensity, zap count=1).
+    (
+        "13:47 Snooze Zap (SN=3)",
+        "48415000414e0500616c61726d544d040000471380574401001e574902000f00534e010003414f0100014d4809004d430500850c32fafa5048090050430500850c32fafa5a4806005a4302008132494402000300",
+        dict(hour=13, minute=47, name="alarm", weekdays=0, snooze=True, stimulus_interval=15,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=True, count=5, intensity=50),
+             zap=AlarmAction(enabled=True, count=1, intensity=50),
+             snooze_zap=True),
+        3,
+    ),
+    (
+        "13:47 Disable Snooze (SN=0)",
+        "48415000414e0500616c61726d544d040000471380574401001e574902000f00534e010000414f0100014d4809004d430500850c32fafa5048090050430500850c32fafa5a4806005a4302008132494402000300",
+        dict(hour=13, minute=47, name="alarm", weekdays=0, snooze=False, stimulus_interval=15,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=True, count=5, intensity=50),
+             zap=AlarmAction(enabled=True, count=1, intensity=50)),
+        3,
+    ),
+    (
+        "13:47 Light Sleep (AO=0x09)",
+        "48415000414e0500616c61726d544d040000471380574401001e574902000f00534e010001414f0100094d4809004d430500850c32fafa5048090050430500850c32fafa5a4806005a4302008132494402000400",
+        dict(hour=13, minute=47, name="alarm", weekdays=0, snooze=True, stimulus_interval=15,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=True, count=5, intensity=50),
+             zap=AlarmAction(enabled=True, count=1, intensity=50),
+             light_sleep=True),
+        4,
+    ),
+    (
+        "13:47 Escalating (AO=0x21 + ES=05)",
+        "48415500414e0500616c61726d544d040000471380574401001e574902000f00534e010001414f01002145530100054d4809004d430500850c32fafa5048090050430500850c32fafa5a4806005a4302008132494402000400",
+        dict(hour=13, minute=47, name="alarm", weekdays=0, snooze=True, stimulus_interval=15,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=True, count=5, intensity=50),
+             zap=AlarmAction(enabled=True, count=1, intensity=50),
+             escalating=True),
+        4,
+    ),
+    (
+        "13:47 Smart Alarm (AO=0x41 + SM=0f0506)",
+        "48415700414e0500616c61726d544d040000471380574401001e574902000f00534e010001414f010041534d03000f05064d4809004d430500850c32fafa5048090050430500850c32fafa5a4806005a4302008132494402000400",
+        dict(hour=13, minute=47, name="alarm", weekdays=0, snooze=True, stimulus_interval=15,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=True, count=5, intensity=50),
+             zap=AlarmAction(enabled=True, count=1, intensity=50),
+             smart_alarm=True),
+        4,
+    ),
 ]
 
 

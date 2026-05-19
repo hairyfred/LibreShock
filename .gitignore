@@ -23,3 +23,6 @@ keystore.properties
 # IDE
 .vscode/
 *.swp
+
+# JVM crash dumps (occasionally appear after a Gradle test executor crash)
+hs_err_pid*.log

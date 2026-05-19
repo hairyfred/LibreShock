@@ -50,6 +50,7 @@ fun AlarmFiringDialog(
     alarmId: Int,
     requiresQrScan: Boolean,
     requiresPuzzle: Boolean,
+    snoozeAllowed: Boolean,
     onStop: (StopOrigin) -> Unit,
     onSnooze: () -> Unit,
     onOpenPuzzle: () -> Unit,
@@ -142,11 +143,13 @@ fun AlarmFiringDialog(
                         }
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(
-                    onClick = onSnooze,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Snooze") }
+                if (snoozeAllowed) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onSnooze,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Snooze") }
+                }
             }
         }
     }
