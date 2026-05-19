@@ -42,15 +42,17 @@ import com.journeyapps.barcodescanner.ScanOptions
  */
 /** Origin hint passed back to [onStop] so the celebration burst can fire
  *  from somewhere visually connected to the user's action — Stop button
- *  for direct dismissal, middle of the screen for a QR scan dismissal. */
-enum class StopOrigin { BUTTON, QR_SCAN }
+ *  for direct dismissal, middle of the screen for a scan or puzzle. */
+enum class StopOrigin { BUTTON, QR_SCAN, PUZZLE }
 
 @Composable
 fun AlarmFiringDialog(
     alarmId: Int,
     requiresQrScan: Boolean,
+    requiresPuzzle: Boolean,
     onStop: (StopOrigin) -> Unit,
     onSnooze: () -> Unit,
+    onOpenPuzzle: () -> Unit,
 ) {
     var scanError by remember { mutableStateOf<String?>(null) }
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
@@ -90,10 +92,10 @@ fun AlarmFiringDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (requiresQrScan) {
-                        "Alarm #$alarmId is firing. Scan the LibreShock QR to stop."
-                    } else {
-                        "Alarm #$alarmId is firing on the watch"
+                    when {
+                        requiresQrScan -> "Alarm #$alarmId is firing. Scan the LibreShock QR to stop."
+                        requiresPuzzle -> "Alarm #$alarmId is firing. Solve a puzzle to stop."
+                        else -> "Alarm #$alarmId is firing on the watch"
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -106,17 +108,13 @@ fun AlarmFiringDialog(
                     )
                 }
                 Spacer(Modifier.height(24.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = onSnooze,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Snooze") }
-                    Button(
-                        onClick = {
-                            if (requiresQrScan) {
+                // Stacked full-width buttons — easier to hit at wake-up time
+                // and avoids the "Solve puzzle" / "Scan QR" labels getting
+                // squeezed onto two lines next to a short "Snooze".
+                Button(
+                    onClick = {
+                        when {
+                            requiresQrScan -> {
                                 val options = ScanOptions().apply {
                                     setPrompt("Scan the LibreShock alarm QR")
                                     setBeepEnabled(false)
@@ -125,19 +123,30 @@ fun AlarmFiringDialog(
                                     setCaptureActivity(PortraitCaptureActivity::class.java)
                                 }
                                 scanLauncher.launch(options)
-                            } else {
-                                onStop(StopOrigin.BUTTON)
                             }
-                        },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                    ) {
-                        Text(if (requiresQrScan) "Scan QR" else "Stop")
-                    }
+                            requiresPuzzle -> onOpenPuzzle()
+                            else -> onStop(StopOrigin.BUTTON)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Text(
+                        when {
+                            requiresQrScan -> "Scan QR"
+                            requiresPuzzle -> "Solve puzzle"
+                            else -> "Stop"
+                        }
+                    )
                 }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onSnooze,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Snooze") }
             }
         }
     }

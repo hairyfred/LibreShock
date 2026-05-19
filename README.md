@@ -24,7 +24,8 @@ Two interfaces:
 - Manage alarms: list, create, edit, enable/disable, delete, per-day repeats
 - Set a wake-up guarantor on any alarm — Jumping Jacks (counted on the
   watch), [QR code scan](docs/images/libreshock-qr.png), or Puzzle unlock
-  (Pavlok app only for now)
+  (memory grid or arithmetic equation, randomly picked; toggleable in
+  Settings)
 - Stop or snooze a currently-firing alarm from the phone / desktop
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity

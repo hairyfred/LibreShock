@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -89,8 +91,10 @@ import uk.hairyfred.libreshock.ble.nextEnabledAlarm
 import uk.hairyfred.libreshock.ui.AlarmEditScreen
 import uk.hairyfred.libreshock.ui.AlarmFiringDialog
 import uk.hairyfred.libreshock.ui.AlarmNotifier
+import uk.hairyfred.libreshock.ui.AlarmPuzzleScreen
 import uk.hairyfred.libreshock.ui.AlarmsScreen
 import uk.hairyfred.libreshock.ui.ConfettiOverlay
+import uk.hairyfred.libreshock.ui.PuzzleSettings
 import uk.hairyfred.libreshock.ui.StopOrigin
 import uk.hairyfred.libreshock.ui.celebrationParties
 import nl.dionsegijn.konfetti.core.Party
@@ -158,6 +162,7 @@ fun AppRoot() {
     // becomes "Scan QR to stop", and the notification points back to the app
     // (since scanning needs the camera) instead of stopping directly.
     var firingRequiresQrScan by remember { mutableStateOf(false) }
+    var firingRequiresPuzzle by remember { mutableStateOf(false) }
     var confettiParties by remember { mutableStateOf<List<Party>>(emptyList()) }
 
     fun celebrate(relX: Float = 0.5f, relY: Float = 0.5f) {
@@ -175,15 +180,22 @@ fun AppRoot() {
                     // alarm_id from the watch is 1-based; the cached list is
                     // zero-indexed in the same order setAlarms() wrote them.
                     val firingAlarm = alarms?.getOrNull(event.alarmId - 1)
-                    val qrGuarded = firingAlarm?.guarantor ==
-                        uk.hairyfred.libreshock.ble.Guarantor.QR_CODE
+                    val g = firingAlarm?.guarantor
+                    val qrGuarded = g == uk.hairyfred.libreshock.ble.Guarantor.QR_CODE
+                    val puzzleGuarded = g == uk.hairyfred.libreshock.ble.Guarantor.PUZZLE
                     firingAlarmId = event.alarmId
                     firingRequiresQrScan = qrGuarded
-                    AlarmNotifier.notifyFiring(context, event.alarmId, requiresQrScan = qrGuarded)
+                    firingRequiresPuzzle = puzzleGuarded
+                    AlarmNotifier.notifyFiring(
+                        context, event.alarmId,
+                        requiresQrScan = qrGuarded,
+                        requiresPuzzle = puzzleGuarded,
+                    )
                 }
                 NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> {
                     firingAlarmId = null
                     firingRequiresQrScan = false
+                    firingRequiresPuzzle = false
                     AlarmNotifier.cancel(context)
                 }
             }
@@ -199,6 +211,7 @@ fun AppRoot() {
                         val ok = device.stopAlarm()
                         firingAlarmId = null
                         firingRequiresQrScan = false
+                        firingRequiresPuzzle = false
                         AlarmNotifier.cancel(context)
                         if (ok) celebrate(0.5f, 0.5f)
                         snackbarHostState.showSnackbar(
@@ -209,6 +222,7 @@ fun AppRoot() {
                         val ok = device.snoozeAlarm()
                         firingAlarmId = null
                         firingRequiresQrScan = false
+                        firingRequiresPuzzle = false
                         AlarmNotifier.cancel(context)
                         snackbarHostState.showSnackbar(
                             if (ok) "Alarm snoozed" else "Failed to snooze alarm"
@@ -365,11 +379,13 @@ fun AppRoot() {
         "battery_usage" -> "Battery usage"
         "hand_raise" -> "Hand raise detection"
         "buttons" -> "Configure device buttons"
+        "puzzle_solve" -> "Solve to dismiss"
         else -> "LibreShock"
     }
 
-    // System back / swipe-back: alarm_edit → alarms, anything else → main
-    BackHandler(enabled = screen != "main") {
+    // System back / swipe-back: alarm_edit → alarms; puzzle_solve traps back
+    // (user shouldn't be able to escape without solving / snoozing).
+    BackHandler(enabled = screen != "main" && screen != "puzzle_solve") {
         screen = when (screen) {
             "alarm_edit" -> "alarms"
             else -> "main"
@@ -484,6 +500,44 @@ fun AppRoot() {
                 prefs = prefs,
                 padding = padding,
             )
+            "puzzle_solve" -> {
+                val allowMem = prefs.getBoolean("puzzle_memory_enabled", true)
+                val allowEq = prefs.getBoolean("puzzle_equation_enabled", true)
+                val keep = prefs.getBoolean("puzzle_keep_on_wrong", false)
+                // Both off would break the picker; force-enable both as a fallback.
+                val s = if (!allowMem && !allowEq) PuzzleSettings(true, true, keep)
+                        else PuzzleSettings(memory = allowMem, equation = allowEq, keepOnWrong = keep)
+                AlarmPuzzleScreen(
+                    settings = s,
+                    alarmId = firingAlarmId ?: 0,
+                    padding = padding,
+                    onSolved = {
+                        rootScope.launch {
+                            val ok = device.stopAlarm()
+                            firingAlarmId = null
+                            firingRequiresPuzzle = false
+                            AlarmNotifier.cancel(context)
+                            if (ok) celebrate(0.5f, 0.5f)
+                            screen = "main"
+                            snackbarHostState.showSnackbar(
+                                if (ok) "Alarm dismissed" else "Failed to stop alarm"
+                            )
+                        }
+                    },
+                    onSnooze = {
+                        rootScope.launch {
+                            val ok = device.snoozeAlarm()
+                            firingAlarmId = null
+                            firingRequiresPuzzle = false
+                            AlarmNotifier.cancel(context)
+                            screen = "main"
+                            snackbarHostState.showSnackbar(
+                                if (ok) "Alarm snoozed" else "Failed to snooze alarm"
+                            )
+                        }
+                    },
+                )
+            }
             else -> ConnectionFlow(
                 prefs = prefs,
                 device = device,
@@ -499,23 +553,27 @@ fun AppRoot() {
         }
     }
 
-    firingAlarmId?.let { id ->
+    // Hide the dialog while the puzzle screen is up — the puzzle replaces it.
+    if (firingAlarmId != null && screen != "puzzle_solve") {
+        val id = firingAlarmId!!
         AlarmFiringDialog(
             alarmId = id,
             requiresQrScan = firingRequiresQrScan,
+            requiresPuzzle = firingRequiresPuzzle,
             onStop = { origin ->
                 rootScope.launch {
                     val ok = device.stopAlarm()
                     firingAlarmId = null
                     firingRequiresQrScan = false
+                    firingRequiresPuzzle = false
                     if (ok) {
                         // Stop button sits in the dialog's bottom action row,
                         // roughly centered horizontally and ~2/3 down vertically.
-                        // QR-scan path returns to a now-empty screen, so fire
-                        // from dead center.
+                        // Scan / puzzle paths return to a now-empty screen, so
+                        // fire from dead center.
                         when (origin) {
                             StopOrigin.BUTTON -> celebrate(0.5f, 0.66f)
-                            StopOrigin.QR_SCAN -> celebrate(0.5f, 0.5f)
+                            StopOrigin.QR_SCAN, StopOrigin.PUZZLE -> celebrate(0.5f, 0.5f)
                         }
                     }
                     snackbarHostState.showSnackbar(
@@ -528,11 +586,13 @@ fun AppRoot() {
                     val ok = device.snoozeAlarm()
                     firingAlarmId = null
                     firingRequiresQrScan = false
+                    firingRequiresPuzzle = false
                     snackbarHostState.showSnackbar(
                         if (ok) "Alarm snoozed" else "Failed to snooze alarm"
                     )
                 }
             },
+            onOpenPuzzle = { screen = "puzzle_solve" },
         )
     }
 
@@ -755,6 +815,9 @@ private fun SettingsScreen(
     var debugLogging by remember { mutableStateOf(prefs.getBoolean("debug_logging", false)) }
     var sleepTracking by remember { mutableStateOf(prefs.getBoolean("sleep_tracking", false)) }
     var confetti by remember { mutableStateOf(prefs.getBoolean("confetti_enabled", false)) }
+    var puzzleMemory by remember { mutableStateOf(prefs.getBoolean("puzzle_memory_enabled", true)) }
+    var puzzleEquation by remember { mutableStateOf(prefs.getBoolean("puzzle_equation_enabled", true)) }
+    var puzzleKeepOnWrong by remember { mutableStateOf(prefs.getBoolean("puzzle_keep_on_wrong", false)) }
     var showExportDialog by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
     val lastName = prefs.getString("last_name", null)
@@ -764,6 +827,7 @@ private fun SettingsScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding)
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -816,6 +880,52 @@ private fun SettingsScreen(
                 if (it) onConfettiPreview()
             },
         )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Alarm puzzle types", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Which puzzles can a Puzzle-guarded alarm pick from. At least one " +
+                        "must stay on — disabling both falls back to both enabled.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Memory puzzle", modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge)
+                    Switch(checked = puzzleMemory, onCheckedChange = {
+                        // Refuse to disable if it's the last one on.
+                        if (!it && !puzzleEquation) return@Switch
+                        puzzleMemory = it
+                        prefs.edit { putBoolean("puzzle_memory_enabled", it) }
+                    })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Equation puzzle", modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge)
+                    Switch(checked = puzzleEquation, onCheckedChange = {
+                        if (!it && !puzzleMemory) return@Switch
+                        puzzleEquation = it
+                        prefs.edit { putBoolean("puzzle_equation_enabled", it) }
+                    })
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Keep same puzzle on wrong answer",
+                            style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "By default a wrong answer rolls a fresh puzzle. Turn this on " +
+                                "to keep retrying the same one.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(checked = puzzleKeepOnWrong, onCheckedChange = {
+                        puzzleKeepOnWrong = it
+                        prefs.edit { putBoolean("puzzle_keep_on_wrong", it) }
+                    })
+                }
+            }
+        }
 
         if (lastName != null) {
             Card(modifier = Modifier.fillMaxWidth()) {

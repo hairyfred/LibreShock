@@ -38,11 +38,17 @@ object AlarmNotifier {
         nm.createNotificationChannel(channel)
     }
 
-    /** Post the alarm-firing notification. When [requiresQrScan] is true, the
-     *  "Stop" action is replaced with "Open to scan" — the actual stop has
-     *  to be gated by a camera scan inside the app, so the action just brings
-     *  the app to the foreground where the AlarmFiringDialog handles the scan. */
-    fun notifyFiring(context: Context, alarmId: Int, requiresQrScan: Boolean = false) {
+    /** Post the alarm-firing notification. When [requiresQrScan] or
+     *  [requiresPuzzle] is true, the "Stop" action is replaced with
+     *  "Open to scan" / "Open to solve" — the gate (camera or puzzle) lives
+     *  inside the app, so the action just brings the app to the foreground
+     *  where the dialog/puzzle handles the actual stop. */
+    fun notifyFiring(
+        context: Context,
+        alarmId: Int,
+        requiresQrScan: Boolean = false,
+        requiresPuzzle: Boolean = false,
+    ) {
         ensureChannel(context)
         val nm = context.getSystemService<NotificationManager>() ?: return
 
@@ -67,8 +73,11 @@ object AlarmNotifier {
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Alarm firing")
             .setContentText(
-                if (requiresQrScan) "Alarm $alarmId — scan the QR to stop"
-                else "Alarm $alarmId is going off"
+                when {
+                    requiresQrScan -> "Alarm $alarmId — scan the QR to stop"
+                    requiresPuzzle -> "Alarm $alarmId — solve a puzzle to stop"
+                    else -> "Alarm $alarmId is going off"
+                }
             )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -76,13 +85,10 @@ object AlarmNotifier {
             .setAutoCancel(false)
             .setContentIntent(openPi)
 
-        if (requiresQrScan) {
-            // No direct-stop from the shade — scanning needs the camera, so
-            // the action just opens the app. The dialog's "Scan QR" button
-            // handles the actual stop on a successful match.
-            builder.addAction(0, "Open to scan", openPi)
-        } else {
-            builder.addAction(0, "Stop", stopPi)
+        when {
+            requiresQrScan -> builder.addAction(0, "Open to scan", openPi)
+            requiresPuzzle -> builder.addAction(0, "Open to solve", openPi)
+            else -> builder.addAction(0, "Stop", stopPi)
         }
         builder.addAction(0, "Snooze", snoozePi)
 
