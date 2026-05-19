@@ -18,14 +18,19 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -49,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import uk.hairyfred.libreshock.ble.AlarmAction
 import uk.hairyfred.libreshock.ble.AlarmConfig
+import uk.hairyfred.libreshock.ble.Guarantor
 import uk.hairyfred.libreshock.ble.ShockDevice
 import uk.hairyfred.libreshock.ble.Weekday
 
@@ -208,6 +214,12 @@ private fun stimSummary(alarm: AlarmConfig): String {
         if (alarm.vibration.enabled) add("vibe ${alarm.vibration.intensity}%")
         if (alarm.beep.enabled) add("beep ${alarm.beep.intensity}%")
         if (alarm.zap.enabled) add("zap ${alarm.zap.intensity}%×${alarm.zap.count}")
+        when (alarm.guarantor) {
+            Guarantor.JUMPING_JACKS -> add("JJ×${alarm.jumpingJacksCount}")
+            Guarantor.QR_CODE -> add("QR")
+            Guarantor.PUZZLE -> add("puzzle")
+            Guarantor.NONE -> {}
+        }
     }
     return if (parts.isEmpty()) "(no stims)" else parts.joinToString(" • ")
 }
@@ -250,6 +262,12 @@ fun AlarmEditScreen(
     var zapIntensity by remember { mutableStateOf(starting.zap.intensity.toFloat()) }
     var zapCount by remember { mutableStateOf(starting.zap.count.toFloat()) }
 
+    var guarantor by remember { mutableStateOf(starting.guarantor) }
+    var jjacksCount by remember {
+        mutableStateOf(starting.jumpingJacksCount.coerceIn(1, 20).toFloat())
+    }
+    var guarantorExpanded by remember { mutableStateOf(starting.guarantor != Guarantor.NONE) }
+
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showTimeDialog by remember { mutableStateOf(false) }
@@ -261,6 +279,8 @@ fun AlarmEditScreen(
         vibration = AlarmAction(enabled = vibeOn, count = 5, intensity = vibeIntensity.toInt()),
         beep = AlarmAction(enabled = beepOn, count = 5, intensity = beepIntensity.toInt()),
         zap = AlarmAction(enabled = zapOn, count = zapCount.toInt().coerceIn(1, 15), intensity = zapIntensity.toInt()),
+        guarantor = guarantor,
+        jumpingJacksCount = jjacksCount.toInt().coerceIn(1, 20),
     )
 
     suspend fun saveAndExit() {
@@ -387,6 +407,15 @@ fun AlarmEditScreen(
             countSlider = CountSlider(value = zapCount, range = 1f..15f, onChange = { zapCount = it }),
         )
 
+        GuarantorCard(
+            expanded = guarantorExpanded,
+            onExpandToggle = { guarantorExpanded = !guarantorExpanded },
+            selected = guarantor,
+            onSelect = { guarantor = it },
+            jjacksCount = jjacksCount,
+            onJjacksCountChange = { jjacksCount = it },
+        )
+
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -453,6 +482,92 @@ private fun StimSection(
                     Slider(value = it.value, onValueChange = it.onChange, valueRange = it.range)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun GuarantorCard(
+    expanded: Boolean,
+    onExpandToggle: () -> Unit,
+    selected: Guarantor,
+    onSelect: (Guarantor) -> Unit,
+    jjacksCount: Float,
+    onJjacksCountChange: (Float) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onExpandToggle),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Wake-up guarantor", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        when (selected) {
+                            Guarantor.NONE -> "Stop with a single tap"
+                            Guarantor.JUMPING_JACKS -> "Jumping Jacks (${jjacksCount.toInt()} reps)"
+                            Guarantor.QR_CODE -> "QR code scan"
+                            Guarantor.PUZZLE -> "Puzzle unlock"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                )
+            }
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                Guarantor.values().forEach { g ->
+                    GuarantorRow(
+                        guarantor = g,
+                        selected = selected == g,
+                        onClick = { onSelect(g) },
+                    )
+                }
+                if (selected == Guarantor.JUMPING_JACKS) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Required reps — ${jjacksCount.toInt()}",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Slider(
+                        value = jjacksCount,
+                        onValueChange = onJjacksCountChange,
+                        valueRange = 1f..20f,
+                        steps = 18,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GuarantorRow(guarantor: Guarantor, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+            Text(guarantor.displayName, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                when (guarantor) {
+                    Guarantor.NONE -> "Stop the alarm with a single tap"
+                    Guarantor.JUMPING_JACKS -> "Watch counts your jumps before the alarm stops"
+                    Guarantor.QR_CODE -> "Scan a printed QR code in the LibreShock app to stop the alarm"
+                    Guarantor.PUZZLE -> "Vendor-app only for now — stop via the watch or the Pavlok app"
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
