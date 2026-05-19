@@ -22,6 +22,9 @@ Two interfaces:
 
 - Trigger vibrate / beep / zap (with adjustable intensity)
 - Manage alarms: list, create, edit, enable/disable, delete, per-day repeats
+- Set a wake-up guarantor on any alarm — Jumping Jacks (counted on the
+  watch), [QR code scan](docs/images/libreshock-qr.png), or Puzzle unlock
+  (Pavlok app only for now)
 - Stop or snooze a currently-firing alarm from the phone / desktop
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity
@@ -136,6 +139,8 @@ scripts/
   verify_combos.py             Byte-exact test vs captured vendor packets
   parse_alarm_packet.py        Decode a single packet
   timeline.py                  Chronological dump of writes/notifications
+  generate_qr.py               Regenerate the bundled alarm-stop QR PNG
+docs/images/libreshock-qr.png  Printable alarm-stop QR (QR guarantor)
 CLAUDE.md            Full reverse-engineered protocol documentation
 ```
 

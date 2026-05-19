@@ -271,6 +271,7 @@ fun AlarmEditScreen(
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showTimeDialog by remember { mutableStateOf(false) }
+    var showQrDialog by remember { mutableStateOf(false) }
 
     fun build(): AlarmConfig = AlarmConfig(
         hour = timePickerState.hour, minute = timePickerState.minute, name = "alarm",
@@ -414,6 +415,7 @@ fun AlarmEditScreen(
             onSelect = { guarantor = it },
             jjacksCount = jjacksCount,
             onJjacksCountChange = { jjacksCount = it },
+            onViewQrCode = { showQrDialog = true },
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -449,6 +451,10 @@ fun AlarmEditScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Delete alarm") }
         }
+    }
+
+    if (showQrDialog) {
+        QrCodeDialog(onDismiss = { showQrDialog = false })
     }
 }
 
@@ -494,6 +500,7 @@ private fun GuarantorCard(
     onSelect: (Guarantor) -> Unit,
     jjacksCount: Float,
     onJjacksCountChange: (Float) -> Unit,
+    onViewQrCode: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -541,6 +548,13 @@ private fun GuarantorCard(
                         valueRange = 1f..20f,
                         steps = 18,
                     )
+                }
+                if (selected == Guarantor.QR_CODE) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onViewQrCode,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("View / print QR code") }
                 }
             }
         }

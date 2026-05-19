@@ -417,10 +417,16 @@ fun AppRoot() {
                     }
                 },
             )
-            "alarm_edit" -> AlarmEditScreen(device, editingAlarm, editingIndex, padding) {
-                screen = "alarms"
-                rootScope.launch { refreshAlarms() }
-            }
+            "alarm_edit" -> AlarmEditScreen(
+                device = device,
+                initial = editingAlarm,
+                index = editingIndex,
+                padding = padding,
+                onDone = {
+                    screen = "alarms"
+                    rootScope.launch { refreshAlarms() }
+                },
+            )
             "device_info" -> DeviceInfoScreen(
                 device = device,
                 deviceName = prefs.getString("last_name", null),
