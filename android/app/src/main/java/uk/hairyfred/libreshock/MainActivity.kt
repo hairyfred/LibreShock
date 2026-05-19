@@ -102,6 +102,7 @@ import uk.hairyfred.libreshock.ui.BatteryUsageScreen
 import uk.hairyfred.libreshock.ui.ButtonsScreen
 import uk.hairyfred.libreshock.ui.DeviceInfoScreen
 import uk.hairyfred.libreshock.ui.HandRaiseScreen
+import uk.hairyfred.libreshock.ui.TimerStopwatchScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
 
 class MainActivity : ComponentActivity() {
@@ -386,6 +387,7 @@ fun AppRoot() {
         "battery_usage" -> "Battery usage"
         "hand_raise" -> "Hand raise detection"
         "buttons" -> "Configure device buttons"
+        "tns" -> "Timer & Stopwatch"
         "puzzle_solve" -> "Solve to dismiss"
         else -> "LibreShock"
     }
@@ -507,6 +509,14 @@ fun AppRoot() {
                 prefs = prefs,
                 padding = padding,
             )
+            "tns" -> TimerStopwatchScreen(
+                device = device,
+                padding = padding,
+                onSaved = { msg ->
+                    screen = "main"
+                    rootScope.launch { snackbarHostState.showSnackbar(msg) }
+                },
+            )
             "puzzle_solve" -> {
                 val allowMem = prefs.getBoolean("puzzle_memory_enabled", true)
                 val allowEq = prefs.getBoolean("puzzle_equation_enabled", true)
@@ -556,6 +566,7 @@ fun AppRoot() {
                 onOpenBatteryUsage = { screen = "battery_usage" },
                 onOpenHandRaise = { screen = "hand_raise" },
                 onOpenButtons = { screen = "buttons" },
+                onOpenTns = { screen = "tns" },
             )
         }
     }
@@ -620,6 +631,7 @@ fun ConnectionFlow(
     onOpenBatteryUsage: () -> Unit,
     onOpenHandRaise: () -> Unit,
     onOpenButtons: () -> Unit,
+    onOpenTns: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -796,6 +808,7 @@ fun ConnectionFlow(
                 onBatteryUsage = onOpenBatteryUsage,
                 onHandRaise = onOpenHandRaise,
                 onButtons = onOpenButtons,
+                onTns = onOpenTns,
                 onDisconnect = {
                     device.disconnect()
                     isConnected = false
@@ -1123,6 +1136,7 @@ private fun ActionButtons(
     onBatteryUsage: () -> Unit,
     onHandRaise: () -> Unit,
     onButtons: () -> Unit,
+    onTns: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     var vibeIntensity by remember { mutableStateOf(50f) }
@@ -1162,6 +1176,9 @@ private fun ActionButtons(
                     onTrigger = { onZap(zapIntensity.toInt()) },
                 )
             }
+        }
+        FilledTonalButton(onClick = onTns, modifier = Modifier.fillMaxWidth()) {
+            Text("Timer & Stopwatch")
         }
         FilledTonalButton(onClick = onButtons, modifier = Modifier.fillMaxWidth()) {
             Text("Configure device buttons")

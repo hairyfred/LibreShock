@@ -30,6 +30,8 @@ each run, so no address needs to be passed.
 | `sleep` | Enable/disable automatic sleep tracking (`--on` / `--off`) |
 | `handraise` | Configure hand-raise detection (`--on`/`--off`, `--hand`, `--wrist`, `--stim`) |
 | `button` | Rebind one of the 6 hardware-button slots (`--slot`, `--act`) |
+| `timer` | Configure the watch's Timer with a recurring stim interval (`--duration`, `--every`, `--stim`, `-i`) |
+| `stopwatch` | Configure the watch's Stopwatch with a recurring stim interval (`--every`, `--stim`, `-i`) |
 | `status` | Show the raw vibe / beep / zap / LED config currently stored on the device |
 | `debug` | Print a debug report (GATT services, characteristic values, battery, device info) for issue reports. Use `--censor` to redact MAC / name suffix / serial. |
 | `help` | Print full help with all options |
@@ -222,6 +224,36 @@ on the phone, not on the watch. If you toggle via libreshock the watch
 will obey, but the Pavlok app may show a blank "-- and --" time range
 afterwards because we bypassed its scheduling. Re-set the time range in
 the Pavlok app to clear the blank state.
+
+## Timer & Stopwatch
+
+The watch has a Timer & Stopwatch screen with one or more recurring
+stim intervals. The CLI lets you configure a single-interval setup:
+
+```
+# 1-minute timer that zaps at 50% every 5 seconds
+python libreshock.py timer --duration 60 --every 5 --stim zap -i 50
+
+# Stopwatch that beeps at 75% every 10 seconds (runs until you stop on the watch)
+python libreshock.py stopwatch --every 10 --stim beep -i 75
+```
+
+Flags:
+
+- `--duration SEC` — timer countdown duration (1-255 seconds, default 60).
+  Ignored for `stopwatch`.
+- `--every SEC` — repeat interval for the stim (1-255 seconds, default 5).
+- `--stim` — one of `vibe`, `beep`, `zap` (default `zap`).
+- `-i, --intensity` — 0-100% (default 50). The watch's internal range
+  for these intervals is 0x21-0x34 (a safety cap, since the interval
+  can fire every second); 0-100% is mapped onto that range with
+  integer truncation.
+
+Start and stop the timer/stopwatch with the watch buttons (the default
+binding is middle-long-press; see [Configure device buttons](#hardware-button-rebinding)).
+
+The Android app supports multiple intervals per Timer/Stopwatch via the
+"Timer & Stopwatch" button on the main screen.
 
 ## Debug report
 

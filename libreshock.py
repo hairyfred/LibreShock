@@ -109,6 +109,112 @@ class AlarmConfig:
                 days.append(name)
         return days
 
+# Timer & Stopwatch config. The watch's "Timer & Stopwatch" screen lets the
+# user pick a mode (countdown timer with fixed duration, or open-ended
+# stopwatch), then attach one or more recurring stim intervals. The config
+# is written to the same characteristic as button rebinding (char 7001) but
+# with opcode 0x22.
+class TnsMode:
+    TIMER = 0x12      # countdown for a fixed duration
+    STOPWATCH = 0x13  # open-ended counter
+
+# Timer/Stopwatch stim classes — same numbering as the per-button action
+# classes (1=vibrate, 2=beep, 3=zap).
+class TnsStim:
+    VIBE = 0x01
+    BEEP = 0x02
+    ZAP = 0x03
+
+
+@dataclass
+class TnsInterval:
+    """A single recurring stim during a Timer/Stopwatch run.
+
+    The watch's per-interval intensity is clamped to a much narrower
+    internal range (0x21–0x34) than the 0-100 used elsewhere, presumably
+    as a safety cap since intervals can fire every second. The
+    [intensity] field on this class is the user-facing 0-100; the
+    encoder maps it onto the watch's range.
+    """
+    stim: int = TnsStim.ZAP
+    intensity: int = 50  # 0-100, mapped onto 0x21..0x34 on the wire
+    every_seconds: int = 5  # repeat interval, max 65535 (~18 hours)
+
+
+@dataclass
+class TnsConfig:
+    """Timer & Stopwatch configuration. Has a single shared list of
+    intervals; the vendor app only lets you have one stim per `every_seconds`
+    value (i.e. you can have a Zap every 5s and a Beep every 10s, but not
+    two stims both on the every-5s slot)."""
+    mode: int = TnsMode.STOPWATCH
+    duration_seconds: int = 0  # Timer countdown duration; ignored when mode=STOPWATCH
+    intervals: List[TnsInterval] = field(default_factory=list)
+
+
+# Watch's intensity range for Timer/Stopwatch intervals (vendor-app-imposed
+# safety cap; outside this range the watch ignores the byte).
+TNS_INTENSITY_MIN = 0x21  # 33 — corresponds to 0% on the slider
+TNS_INTENSITY_MAX = 0x34  # 52 — corresponds to 100%
+TNS_INTENSITY_RANGE = TNS_INTENSITY_MAX - TNS_INTENSITY_MIN  # 19
+
+
+def tns_intensity_to_byte(percent: int) -> int:
+    """Map a 0-100 user-facing intensity onto the watch's 0x21-0x34 byte.
+
+    Vendor app uses integer truncation, not rounding — verified
+    byte-exact for 0/50/75/100% (the only values we've captured).
+    """
+    p = max(0, min(100, percent))
+    return TNS_INTENSITY_MIN + (p * TNS_INTENSITY_RANGE) // 100
+
+
+def tns_intensity_from_byte(byte_val: int) -> int:
+    """Inverse of tns_intensity_to_byte. Returns 0-100."""
+    clamped = max(TNS_INTENSITY_MIN, min(TNS_INTENSITY_MAX, byte_val))
+    # Round up so the parsed percent re-encodes to the same byte.
+    return ((clamped - TNS_INTENSITY_MIN) * 100 + TNS_INTENSITY_RANGE - 1) // TNS_INTENSITY_RANGE
+
+
+def build_tns_config(config: TnsConfig) -> bytes:
+    """Build the BLE write payload for a Timer/Stopwatch config.
+
+    Layout (full packet sent to char 7001):
+      22 <body_len:u16-LE> <body> 00
+
+      body = <mode:1> f5 02 01 <duration:1> f0
+             <indicator:1> <intervals_data>
+
+    Each interval is 3 bytes: <stim_class> <intensity_byte> <every_seconds:u8>.
+    When multiple intervals are present they're joined with a `0x00`
+    separator (so the watch can scan stim by stim). The indicator byte
+    equals 1 + len(intervals_data) — effectively the offset from itself
+    to the byte right after the last interval.
+
+    Interval seconds are u8 (1..255). The vendor app caps the picker
+    accordingly.
+    """
+    chunks = []
+    for iv in config.intervals:
+        secs = max(1, min(iv.every_seconds, 0xFF))
+        chunks.append(bytes([
+            iv.stim & 0xFF,
+            tns_intensity_to_byte(iv.intensity),
+            secs,
+        ]))
+    intervals_data = b'\x00'.join(chunks)
+    indicator = 1 + len(intervals_data)
+    duration = max(0, min(config.duration_seconds, 0xFF))
+    body = bytes([
+        config.mode & 0xFF,
+        0xf5, 0x02, 0x01,
+        duration,
+        0xf0,
+        indicator & 0xFF,
+    ]) + intervals_data
+    return bytes([0x22]) + struct.pack('<H', len(body)) + body + bytes([0x00])
+
+
 # Device identification. Vendor uses "Pavlok-<model>-<id>" today but we match
 # anything starting with "Pavlok" so future name formats (other models or
 # rebrands) still work. Protocol verified on Pavlok-3; other models untested.
@@ -575,6 +681,34 @@ class ShockDevice:
             return True
         except Exception as e:
             print(f"Button bind failed: {e}")
+            return False
+
+    async def set_tns_config(self, config: TnsConfig) -> bool:
+        """Write a Timer/Stopwatch configuration to the watch.
+
+        Goes through the same characteristic as button rebinding (char 7001)
+        but with opcode 0x22. The watch parses the payload, switches its
+        display to Timer or Stopwatch mode (per `config.mode`), and arms
+        the recurring intervals. Start/stop is done from the watch buttons.
+        """
+        payload = build_tns_config(config)
+        try:
+            await self.client.write_gatt_char(CHAR_BUTTON_CONFIG, payload, response=True)
+            mode_name = "Timer" if config.mode == TnsMode.TIMER else "Stopwatch"
+            iv_summary = ", ".join(
+                f"{['?', 'vibe', 'beep', 'zap'][iv.stim] if 0 <= iv.stim <= 3 else '?'}"
+                f" {iv.intensity}% every {iv.every_seconds}s"
+                for iv in config.intervals
+            ) or "(no intervals)"
+            duration_str = (
+                f" for {config.duration_seconds}s" if config.mode == TnsMode.TIMER
+                                                     and config.duration_seconds > 0
+                else ""
+            )
+            print(f"{mode_name}{duration_str}: {iv_summary}")
+            return True
+        except Exception as e:
+            print(f"Timer/Stopwatch config failed: {e}")
             return False
 
     async def read_hand_raise(self) -> Optional[bytes]:
@@ -1206,7 +1340,7 @@ async def main():
     parser.add_argument("action", nargs='?', default="help",
                         choices=["vibe", "beep", "zap", "led", "alarm", "stop", "snooze",
                                  "battery", "info", "sleep", "handraise", "button",
-                                 "debug", "status", "help"],
+                                 "timer", "stopwatch", "debug", "status", "help"],
                         help="Action to perform")
 
     # Common options
@@ -1297,6 +1431,12 @@ async def main():
                         help="With 'debug': redact identifying info (BLE MAC, "
                              "BLE name suffix, serial number)")
 
+    # Timer & Stopwatch options
+    parser.add_argument("--every", type=int, default=5, metavar="SEC",
+                        help="With 'timer'/'stopwatch': stim interval in seconds (1-255, default: 5)")
+    parser.add_argument("--duration", type=int, default=60, metavar="SEC",
+                        help="With 'timer': countdown duration in seconds (default: 60). Ignored for 'stopwatch'.")
+
     args = parser.parse_args()
 
     # Handle help
@@ -1365,6 +1505,25 @@ async def main():
                 )
         elif args.action == "debug":
             await _print_debug_report(device, censor=args.censor)
+        elif args.action in ("timer", "stopwatch"):
+            stim_map = {
+                "vibe": TnsStim.VIBE, "vibrate": TnsStim.VIBE,
+                "beep": TnsStim.BEEP,
+                "zap": TnsStim.ZAP, "shock": TnsStim.ZAP,
+            }
+            stim = stim_map.get((args.stim or "zap").lower(), TnsStim.ZAP)
+            mode = TnsMode.TIMER if args.action == "timer" else TnsMode.STOPWATCH
+            duration = args.duration if mode == TnsMode.TIMER else 0
+            cfg = TnsConfig(
+                mode=mode,
+                duration_seconds=duration,
+                intervals=[TnsInterval(
+                    stim=stim,
+                    intensity=args.intensity,
+                    every_seconds=args.every,
+                )],
+            )
+            await device.set_tns_config(cfg)
         elif args.action == "battery":
             level = await device.read_battery()
             if level is None:

@@ -28,6 +28,8 @@ Two interfaces:
   Settings)
 - Stack any combination of the watch's "Additional wake-up features"
   on any alarm — Snooze Zap, Light Sleep, Escalating Alarm, Smart Alarm
+- Configure the watch's Timer and Stopwatch with one or more recurring
+  stim intervals (vibe / beep / zap, every N seconds)
 - Stop or snooze a currently-firing alarm from the phone / desktop
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity

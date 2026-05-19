@@ -398,6 +398,55 @@ toggle. Payload sent to char 7001: `[0x02, slot, action_class, ...params]`.
 
 Where `count` is 1-15 packed into the low nibble of the byte OR'd with `0x40`.
 
+### Timer & Stopwatch (same char 7001, opcode 0x22)
+
+The watch's "Timer & Stopwatch" screen reuses the button-config
+characteristic with a different opcode. Decoded May 19 2026.
+
+Packet:
+
+```
+22 <body_len:u16-LE> <body> 00
+```
+
+Body:
+
+```
+<mode:1> f5 02 01 <duration:1> f0 <indicator:1> <intervals_data>
+```
+
+| Field | Bytes | Notes |
+|-------|-------|-------|
+| mode | 1 | `0x12` = Timer, `0x13` = Stopwatch |
+| sub-mode | 3 | constant `f5 02 01` |
+| duration | 1 | Timer countdown in seconds (u8 max 255). Stopwatch always 0. |
+| sentinel | 1 | `f0` |
+| indicator | 1 | `1 + len(intervals_data)` — offset from itself to byte after last interval |
+| intervals_data | var | 3-byte intervals joined with `0x00` separator |
+
+Each interval is 3 bytes: `<stim:1> <intensity:1> <every_seconds:u8>`.
+Stim classes match button rebinding (`0x01` vibe, `0x02` beep, `0x03` zap).
+
+**Intensity scale (different from alarms!)**: timer/stopwatch intensity
+is mapped onto the watch's internal 0x21-0x34 range, presumably as a
+safety cap since intervals can fire every second.
+
+```
+byte = 0x21 + (percent * 19) // 100   (integer truncation, not round)
+percent = ceil((byte - 0x21) * 100 / 19)
+```
+
+So 0% → 0x21 (33), 50% → 0x2a (42), 75% → 0x2f (47), 100% → 0x34 (52).
+Anything outside 0x21-0x34 is rejected by the watch.
+
+The vendor app constrains the picker so that no two stim intervals can
+share the same `every_seconds` value — you can have a Zap-every-5s and
+a Beep-every-10s together, but not Zap-every-5s + Beep-every-5s.
+
+Verified byte-exact in `scripts/verify_combos.py` and
+`TimerStopwatchTest.kt` against 5 isolated captures (0%/100% intensity
+extremes, vibe/beep/zap stim classes, both modes).
+
 ### Hand-raise detection (service 156e1000, char 1006)
 
 The watch can fire a stimulus when it detects you raising your hand. 4-byte

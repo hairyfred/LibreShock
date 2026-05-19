@@ -193,6 +193,15 @@ class ShockDevice(private val context: Context) {
             writeChar(CHAR_BUTTON_CONFIG, binding.toPayload(slot))
         }
 
+    /** Push a Timer or Stopwatch configuration to the watch. Same
+     *  characteristic as button rebinding but with the 0x22 opcode that
+     *  [buildTnsConfig] emits. Watch switches to Timer/Stopwatch mode and
+     *  arms the intervals; start/stop is done from the watch buttons. */
+    suspend fun setTnsConfig(config: TnsConfig): Boolean =
+        gattMutex.withLock {
+            writeChar(CHAR_BUTTON_CONFIG, buildTnsConfig(config))
+        }
+
     /** Build a human-readable debug report describing this device — BLE name,
      *  manufacturer/model/serial/fw/hw, every service, char and descriptor
      *  with read values. Designed to be exported and pasted into bug reports

@@ -3,7 +3,10 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from libreshock import AlarmConfig, AlarmAction, Guarantor, _build_alarm_hac_block
+from libreshock import (
+    AlarmConfig, AlarmAction, Guarantor, _build_alarm_hac_block,
+    TnsConfig, TnsInterval, TnsMode, TnsStim, build_tns_config,
+)
 
 # Each tuple: (description, captured_block_hex, AlarmConfig kwargs, alarm_id)
 CASES = [
@@ -188,11 +191,70 @@ CASES = [
 ]
 
 
+TNS_CASES = [
+    # Timer & Stopwatch packets (May 19 2026). Captured as full BLE writes
+    # to char 7001. Each tuple: (description, captured_hex, TnsConfig).
+    (
+        "Timer + Zap 0% every 5s",
+        "220a0012f5020100f00403210500",
+        TnsConfig(mode=TnsMode.TIMER, duration_seconds=0,
+                  intervals=[TnsInterval(stim=TnsStim.ZAP, intensity=0, every_seconds=5)]),
+    ),
+    (
+        "Timer + Zap 100% every 5s",
+        "220a0012f5020100f00403340500",
+        TnsConfig(mode=TnsMode.TIMER, duration_seconds=0,
+                  intervals=[TnsInterval(stim=TnsStim.ZAP, intensity=100, every_seconds=5)]),
+    ),
+    (
+        "Timer + Beep 75% every 10s",
+        "220e0012f5020100f008022f0a0003340100",
+        TnsConfig(mode=TnsMode.TIMER, duration_seconds=0,
+                  intervals=[
+                      TnsInterval(stim=TnsStim.BEEP, intensity=75, every_seconds=10),
+                      TnsInterval(stim=TnsStim.ZAP, intensity=100, every_seconds=1),
+                  ]),
+    ),
+    (
+        "Timer + Vibe 50% every 5s",
+        "220e0012f5020100f008012a050003340100",
+        TnsConfig(mode=TnsMode.TIMER, duration_seconds=0,
+                  intervals=[
+                      TnsInterval(stim=TnsStim.VIBE, intensity=50, every_seconds=5),
+                      TnsInterval(stim=TnsStim.ZAP, intensity=100, every_seconds=1),
+                  ]),
+    ),
+    (
+        "Stopwatch 2-min + Zap 50% every 5s",
+        "220e0013f5020178f008032a050003340100",
+        TnsConfig(mode=TnsMode.STOPWATCH, duration_seconds=120,
+                  intervals=[
+                      TnsInterval(stim=TnsStim.ZAP, intensity=50, every_seconds=5),
+                      TnsInterval(stim=TnsStim.ZAP, intensity=100, every_seconds=1),
+                  ]),
+    ),
+]
+
+
 def main():
     all_match = True
     for name, captured_hex, cfg_kwargs, alarm_id in CASES:
         captured = bytes.fromhex(captured_hex.replace(" ", ""))
         ours = _build_alarm_hac_block(AlarmConfig(**cfg_kwargs), alarm_id=alarm_id)
+        match = ours == captured
+        print(f"{name}: {'[OK]' if match else '[DIFF]'}")
+        if not match:
+            all_match = False
+            print(f"  Captured ({len(captured)}): {captured.hex()}")
+            print(f"  Ours     ({len(ours)}): {ours.hex()}")
+            for i in range(min(len(captured), len(ours))):
+                if captured[i] != ours[i]:
+                    print(f"    offset {i}: cap=0x{captured[i]:02x} ours=0x{ours[i]:02x}")
+            if len(captured) != len(ours):
+                print(f"    length mismatch")
+    for name, captured_hex, cfg in TNS_CASES:
+        captured = bytes.fromhex(captured_hex.replace(" ", ""))
+        ours = build_tns_config(cfg)
         match = ours == captured
         print(f"{name}: {'[OK]' if match else '[DIFF]'}")
         if not match:
