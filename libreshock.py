@@ -14,6 +14,21 @@ from typing import Optional, List
 from bleak import BleakScanner, BleakClient
 
 
+# Alarm guarantor task ("wake-up task" in the vendor UI). Encoded as a bit
+# in the AO byte of the alarm block:
+#   AO=0x01: armed, no task
+#   AO=0x02: Jumping Jacks (also adds a JL TLV holding the rep count)
+#   AO=0x04: QR code scan
+#   AO=0x80: Puzzle unlock
+# These appear to be bit flags, but the vendor UI presents them as a single
+# radio-button choice — only one can be active at a time.
+class Guarantor:
+    NONE = 0x01
+    JUMPING_JACKS = 0x02
+    QR_CODE = 0x04
+    PUZZLE = 0x80
+
+
 # Weekday constants for alarm repeat days
 class Weekday:
     SUNDAY = 0x01
@@ -51,6 +66,13 @@ class AlarmConfig:
     vibration: AlarmAction = field(default_factory=lambda: AlarmAction(enabled=True, count=5, intensity=50))
     beep: AlarmAction = field(default_factory=lambda: AlarmAction(enabled=True, count=5, intensity=50))
     zap: AlarmAction = field(default_factory=lambda: AlarmAction(enabled=True, count=5, intensity=50))
+
+    # Wake-up "guarantor" task that must be completed to stop the alarm.
+    # See Guarantor enum for values.
+    guarantor: int = Guarantor.NONE
+    # Required jumps for the Jumping Jacks guarantor (1-N). Ignored for
+    # other guarantor types.
+    jumping_jacks_count: int = 1
 
     def weekday_names(self) -> List[str]:
         """Return list of day names this alarm repeats on"""
@@ -291,10 +313,18 @@ def _build_alarm_hac_block(config: AlarmConfig, alarm_id: int) -> bytes:
     wd_block = _tlv(b'WD', bytes([0x1E]))
     wi_block = _tlv(b'WI', struct.pack('<H', config.stimulus_interval))
     sn_block = _tlv(b'SN', bytes([0x01 if config.snooze else 0x00]))
-    ao_block = _tlv(b'AO', bytes([0x01 if config.enabled else 0x00]))
+    # AO encodes both the enable bit and the guarantor task. When disabled
+    # we send 0x00; otherwise the value is the Guarantor bit (NONE=0x01).
+    ao_value = config.guarantor if config.enabled else 0x00
+    ao_block = _tlv(b'AO', bytes([ao_value]))
     id_block = _tlv(b'ID', struct.pack('<H', alarm_id))
 
     content = an_block + tm_block + wd_block + wi_block + sn_block + ao_block
+    # Jumping Jacks needs a rep-count TLV (JL) sandwiched between AO and MH.
+    # Vendor app caps the user-visible slider at 20 reps.
+    if config.enabled and config.guarantor == Guarantor.JUMPING_JACKS:
+        jl_count = max(1, min(config.jumping_jacks_count, 20))
+        content += _tlv(b'JL', bytes([jl_count]))
     if config.vibration.enabled:
         content += _tlv(b'MH', _build_mc_block(config))
     if config.beep.enabled:
@@ -825,10 +855,19 @@ class ShockDevice:
             if sn_pos >= 0 and sn_pos + 5 <= len(block):
                 config.snooze = block[sn_pos + 4] != 0
 
-            # Parse AO (Alarm On/Enabled)
+            # Parse AO (Alarm On/Enabled + Guarantor task). The byte is
+            # either 0 (off) or one of the Guarantor.* bit values
+            # (0x01=none, 0x02=jjacks, 0x04=qr, 0x80=puzzle).
             ao_pos = block.find(b'AO')
             if ao_pos >= 0 and ao_pos + 5 <= len(block):
-                config.enabled = block[ao_pos + 4] != 0
+                ao_byte = block[ao_pos + 4]
+                config.enabled = ao_byte != 0
+                config.guarantor = ao_byte if ao_byte != 0 else Guarantor.NONE
+
+            # Parse JL (Jumping-Jacks count) — only present when guarantor=JJ.
+            jl_pos = block.find(b'JL')
+            if jl_pos >= 0 and jl_pos + 5 <= len(block):
+                config.jumping_jacks_count = block[jl_pos + 4]
 
             # Each stim block is omitted entirely when the stim is disabled.
             # Default to disabled, then enable if its block is present.
@@ -912,6 +951,14 @@ def _print_alarm(idx: int, cfg: AlarmConfig):
     print(f"    Vibration: {'ON' if cfg.vibration.enabled else 'OFF'} - {cfg.vibration.count}x @ {cfg.vibration.intensity}%")
     print(f"    Beep: {'ON' if cfg.beep.enabled else 'OFF'} - {cfg.beep.count}x @ {cfg.beep.intensity}%")
     print(f"    Zap: {'ON' if cfg.zap.enabled else 'OFF'} - @ {cfg.zap.intensity}%")
+    guarantor_names = {
+        Guarantor.NONE: "None",
+        Guarantor.JUMPING_JACKS: f"Jumping Jacks ({cfg.jumping_jacks_count} reps)",
+        Guarantor.QR_CODE: "QR code scan",
+        Guarantor.PUZZLE: "Puzzle unlock",
+    }
+    if cfg.guarantor != Guarantor.NONE:
+        print(f"    Guarantor: {guarantor_names.get(cfg.guarantor, f'unknown 0x{cfg.guarantor:02x}')}")
 
 
 def print_help():
@@ -1138,6 +1185,13 @@ async def main():
                         help="Enable snooze (default)")
     parser.add_argument("--no-snooze", dest="snooze", action="store_false",
                         help="Disable snooze")
+    parser.add_argument("--guarantor", type=str, default="none",
+                        choices=["none", "jjacks", "jumping-jacks", "qr", "qr-code", "puzzle"],
+                        help="Wake-up guarantor task that must be completed to stop the alarm "
+                             "(default: none). Note: the Python CLI sets the flag on the watch; "
+                             "actually completing a scan / puzzle requires the Android app.")
+    parser.add_argument("--jjacks", type=int, default=5,
+                        help="Required Jumping-Jacks reps when --guarantor=jjacks (1-20, default: 5)")
 
     # Sleep-tracking + hand-raise shared on/off flags
     parser.add_argument("--on", dest="sleep_on", action="store_true",
@@ -1302,6 +1356,16 @@ async def main():
                 beep_action = parse_action(args.beep, args.beep_count)
                 zap_action = parse_action(args.zap, 1)
 
+                guarantor_map = {
+                    "none": Guarantor.NONE,
+                    "jjacks": Guarantor.JUMPING_JACKS,
+                    "jumping-jacks": Guarantor.JUMPING_JACKS,
+                    "qr": Guarantor.QR_CODE,
+                    "qr-code": Guarantor.QR_CODE,
+                    "puzzle": Guarantor.PUZZLE,
+                }
+                guarantor = guarantor_map[args.guarantor]
+
                 if args.add:
                     # Add to existing alarms
                     existing = await device.list_alarms()
@@ -1316,7 +1380,8 @@ async def main():
                                 hour=h, minute=m, name=args.name,
                                 weekdays=weekdays, snooze=args.snooze,
                                 stimulus_interval=args.interval,
-                                vibration=vibe_action, beep=beep_action, zap=zap_action
+                                vibration=vibe_action, beep=beep_action, zap=zap_action,
+                                guarantor=guarantor, jumping_jacks_count=args.jjacks,
                             )
                             alarm_list.append(new_alarm)
                         except ValueError:
@@ -1340,7 +1405,8 @@ async def main():
                                 hour=h, minute=m, name=args.name,
                                 weekdays=weekdays, snooze=args.snooze,
                                 stimulus_interval=args.interval,
-                                vibration=vibe_action, beep=beep_action, zap=zap_action
+                                vibration=vibe_action, beep=beep_action, zap=zap_action,
+                                guarantor=guarantor, jumping_jacks_count=args.jjacks,
                             )
                             alarm_list.append(new_alarm)
                         except ValueError:

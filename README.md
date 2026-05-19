@@ -35,7 +35,8 @@ Two interfaces:
 - *(Android only)* Battery history graph, live connection state and
   auto-reconnect, Bluetooth-off detection with one-tap re-enable, full
   alarm CRUD UI with Material 3 TimePicker, in-app alarm-fire dialog
-  with Stop / Snooze
+  plus a system notification with Stop / Snooze actions (works while the
+  app is in the background — see *Limitations* below)
 
 ## Status
 
@@ -93,7 +94,20 @@ build, and install on a connected phone with USB debugging on. Min SDK 26
 (Android 8.0).
 
 Permissions: `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` (API 31+); falls
-back to `ACCESS_FINE_LOCATION` on older Android. Requested at runtime.
+back to `ACCESS_FINE_LOCATION` on older Android. `POST_NOTIFICATIONS`
+(Android 13+) for the alarm-firing notification. All requested at runtime.
+
+### Limitations
+
+The alarm-firing notification is **process-alive only** — there's no
+foreground service. The watch only emits the alarm-fire BLE packet to
+something actively connected, so the app needs to be running (foreground
+or backgrounded) to receive it and post the notification. If you swipe
+LibreShock away from Recents, the BLE connection drops and you'll only
+get the alarm on the watch itself (which is what the watch is for —
+this is a convenience layer, not a replacement). A future foreground-
+service mode could keep the connection alive indefinitely at the cost
+of a permanent notification icon and some battery; not implemented yet.
 
 From the command line, with Android Studio's bundled JDK on `JAVA_HOME`:
 
@@ -130,6 +144,21 @@ CLAUDE.md            Full reverse-engineered protocol documentation
 The BLE protocol — services, characteristics, alarm packet format, day-mask
 encoding, CRC algorithm, fire/stop/snooze commands — is fully documented
 in [CLAUDE.md](CLAUDE.md). That file is the canonical reference.
+
+## Credits
+
+LibreShock is MIT-licensed but ships on the shoulders of several open-source
+projects:
+
+- **[bleak](https://github.com/hbldh/bleak)** (MIT) — cross-platform BLE
+  library powering the Python CLI.
+- **[zxing-android-embedded](https://github.com/journeyapps/zxing-android-embedded)**
+  (Apache 2.0) — barcode/QR scanner used by the Android app's
+  "scan-to-stop" alarm guarantor.
+- **[ZXing core](https://github.com/zxing/zxing)** (Apache 2.0) — the
+  decoder zxing-android-embedded wraps.
+- **AndroidX / Jetpack Compose / Material 3** (Apache 2.0) — the Android
+  UI toolkit.
 
 ## Disclaimer
 

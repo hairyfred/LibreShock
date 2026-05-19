@@ -225,7 +225,8 @@ Tags appear in this order: AN, TM, WD, WI, SN, AO, then any of MH/PH/ZH
 | `WD` | 1 | `0x1E` | Constant in all observed vendor packets; not the day mask |
 | `WI` | 2 | uint16_le | Stimulus interval (seconds) |
 | `SN` | 1 | 0/1 | Snooze enabled |
-| `AO` | 1 | 0/1 | Alarm on/enabled |
+| `AO` | 1 | bitfield | Alarm on/enabled + guarantor task (see below) |
+| `JL` | 1 | 1-20 | Jumping-Jacks rep count (present only when AO has the JJ bit set) |
 | `MH` | 9 | contains MC | Vibration Habit (omitted when vibe disabled) |
 | `MC` | 5 | `[flags, count, intensity, 0xfa, 0xfa]` | Vibration config |
 | `PH` | 9 | contains PC | Beep Habit (omitted when beep disabled) |
@@ -233,6 +234,24 @@ Tags appear in this order: AN, TM, WD, WI, SN, AO, then any of MH/PH/ZH
 | `ZH` | 6 | contains ZC | Zap Habit (omitted when zap disabled) |
 | `ZC` | 2 | `[flags, intensity]` | Zap config |
 | `ID` | 2 | uint16_le | Alarm slot ID |
+
+### AO byte — armed + guarantor task
+
+The vendor app's "Wake up on time" screen offers one of three guarantor
+tasks. Each gets its own bit in the AO byte:
+
+| AO value | Meaning |
+|----------|---------|
+| `0x00` | Alarm disabled |
+| `0x01` | Armed, no task |
+| `0x02` | Armed + **Jumping Jacks** (also adds `JL` TLV with rep count, 1-20) |
+| `0x04` | Armed + **QR code scan** (no extra TLV) |
+| `0x80` | Armed + **Puzzle unlock** (no extra TLV) |
+
+Tasks are presented as a radio choice in the UI, so only one bit is set at
+a time. Decoded May 19 2026 from 3 jumping-jacks captures (1/2/3 reps),
+1 QR capture, and 1 puzzle capture. Verified byte-exact in scripts/verify_combos.py
+and AlarmProtocolTest.kt.
 
 ### Stim Combination → HA length byte (observed)
 
@@ -245,6 +264,9 @@ Tags appear in this order: AN, TM, WD, WI, SN, AO, then any of MH/PH/ZH
 | vibe + zap | 67 | `48 41 43 00` | "HAC" |
 | beep + zap | 67 | `48 41 43 00` | "HAC" |
 | vibe + beep + zap | 80 | `48 41 50 00` | "HAP" |
+
+Guarantor tasks add 5 bytes to any of the above when JJ is selected (the
+JL TLV); QR and Puzzle add nothing. E.g. vibe+zap + JJ = HAC + 5 = HAH (72).
 
 ### MC / PC Flags (identical layout)
 - `0x80` - Always set (enabled/active)
@@ -450,7 +472,7 @@ app/src/test/java/.../ble/AlarmProtocolTest.kt   # Byte-exact tests vs captures
 - Settings screen: auto-scan toggle, auto-reconnect toggle, "Forget device" button
 - Alarm CRUD: list device alarms, add/edit/delete with time, repeat days, per-stim toggles + intensity, zap count, snooze, stimulus interval
 - Time entry uses Material 3 TimePicker (clock dial) in a dialog opened by tapping the time card
-- Fire/stop/snooze: when the watch fires an alarm (0x54 notification on char 5003), an in-app dialog pops up with Stop and Snooze buttons. Dialog auto-dismisses if the user stops/snoozes on the watch directly (0x55/0x56 confirmation). In-app only — won't show if the app isn't running.
+- Fire/stop/snooze: when the watch fires an alarm (0x54 notification on char 5003), an in-app dialog pops up with Stop and Snooze buttons. Dialog auto-dismisses if the user stops/snoozes on the watch directly (0x55/0x56 confirmation). In addition to the in-app dialog, a system notification with Stop / Snooze actions is posted via [AlarmNotifier](app/src/main/java/uk/hairyfred/libreshock/ui/AlarmNotifier.kt) — works while the app process is alive (foreground or backgrounded), even if the dialog isn't on-screen. The notification is dismissed automatically when the watch confirms stop/snooze. Lightweight (no foreground service) — won't fire if the user swipes the app away because the BLE connection dies with the process.
 - System back / swipe-back navigates back through screens (alarm-edit → alarms → main)
 - **Device info** screen: reads BLE name, manufacturer, model, serial, firmware/hardware revisions, timezone, device clock (mirrors the vendor app's Device Info screen)
 - **Battery usage** screen: current %, "last charged" approximation, line graph of historical samples. Samples are recorded each time the screen is opened; persisted to a private CSV file in app storage (`battery_history.csv`).

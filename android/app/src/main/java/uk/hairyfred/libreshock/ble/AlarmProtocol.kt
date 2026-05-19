@@ -10,6 +10,21 @@ package uk.hairyfred.libreshock.ble
  * See CLAUDE.md for the full protocol reference.
  */
 
+/** Alarm guarantor task ("wake-up task" in the vendor UI). Encoded as a bit
+ *  in the AO byte of the alarm block. The vendor UI presents these as a
+ *  single radio-button choice — only one is active at a time. */
+enum class Guarantor(val aoBit: Int, val displayName: String) {
+    NONE(0x01, "None"),
+    JUMPING_JACKS(0x02, "Jumping Jacks"),
+    QR_CODE(0x04, "QR code scan"),
+    PUZZLE(0x80, "Puzzle unlock");
+
+    companion object {
+        /** Map an AO byte value back to a Guarantor. Falls back to NONE. */
+        fun fromAo(ao: Int): Guarantor = values().firstOrNull { it.aoBit == ao } ?: NONE
+    }
+}
+
 /** Weekday bitmask values for AlarmConfig.weekdays. */
 object Weekday {
     const val SUNDAY = 0x01
@@ -45,6 +60,10 @@ data class AlarmConfig(
     val vibration: AlarmAction = AlarmAction(),
     val beep: AlarmAction = AlarmAction(),
     val zap: AlarmAction = AlarmAction(),
+    /** Wake-up "guarantor" task that must be completed to stop the alarm. */
+    val guarantor: Guarantor = Guarantor.NONE,
+    /** Required reps for Guarantor.JUMPING_JACKS (1-20). Ignored otherwise. */
+    val jumpingJacksCount: Int = 5,
 )
 
 private const val MC_FLAG_ENABLED = 0x80
@@ -140,10 +159,20 @@ internal fun buildAlarmBlock(config: AlarmConfig, alarmId: Int): ByteArray {
     val wd = tlv("WD", byteArrayOf(0x1E))
     val wi = tlv("WI", u16Le(config.stimulusInterval))
     val sn = tlv("SN", byteArrayOf(if (config.snooze) 0x01 else 0x00))
-    val ao = tlv("AO", byteArrayOf(if (config.enabled) 0x01 else 0x00))
+    // AO encodes both the enable bit and the guarantor task. NONE.aoBit=0x01
+    // gives us the legacy "armed, no task" value; other guarantors use their
+    // own bit. Disabled alarms send 0x00.
+    val aoValue = if (config.enabled) config.guarantor.aoBit else 0x00
+    val ao = tlv("AO", byteArrayOf(aoValue.toByte()))
     val id = tlv("ID", u16Le(alarmId))
 
     var content = an + tm + wd + wi + sn + ao
+    // Jumping Jacks adds a JL TLV (rep count) between AO and MH. Vendor app
+    // caps the slider at 20 reps.
+    if (config.enabled && config.guarantor == Guarantor.JUMPING_JACKS) {
+        val reps = config.jumpingJacksCount.coerceIn(1, 20)
+        content += tlv("JL", byteArrayOf(reps.toByte()))
+    }
     if (config.vibration.enabled) content += tlv("MH", buildMcBlock(config))
     if (config.beep.enabled) content += tlv("PH", buildPcBlock(config))
     if (config.zap.enabled) content += tlv("ZH", buildZcBlock(config))
@@ -258,6 +287,8 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
     var hasVibe = false
     var hasBeep = false
     var hasZap = false
+    var guarantor = Guarantor.NONE
+    var jumpingJacksCount = 5
 
     var p = start
     while (p + 4 <= end) {
@@ -276,7 +307,12 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
             }
             "WI" -> if (len == 2) stimulusInterval = u16LeAt(buf, valStart)
             "SN" -> if (len >= 1) snooze = buf[valStart].toInt() != 0
-            "AO" -> if (len >= 1) enabled = buf[valStart].toInt() != 0
+            "AO" -> if (len >= 1) {
+                val aoByte = buf[valStart].toInt() and 0xFF
+                enabled = aoByte != 0
+                guarantor = if (aoByte == 0) Guarantor.NONE else Guarantor.fromAo(aoByte)
+            }
+            "JL" -> if (len >= 1) jumpingJacksCount = buf[valStart].toInt() and 0xFF
             "MH" -> findTagWithin(buf, valStart, valEnd, "MC")?.let { (vs, _) ->
                 if (vs + 2 < end) {
                     hasVibe = true
@@ -311,6 +347,8 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
                else AlarmAction(enabled = false),
         zap = if (hasZap) AlarmAction(enabled = true, count = zapCount, intensity = zapIntensity)
               else AlarmAction(enabled = false),
+        guarantor = guarantor,
+        jumpingJacksCount = jumpingJacksCount,
     )
 }
 

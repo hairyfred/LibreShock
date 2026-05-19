@@ -3,7 +3,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from libreshock import AlarmConfig, AlarmAction, _build_alarm_hac_block
+from libreshock import AlarmConfig, AlarmAction, Guarantor, _build_alarm_hac_block
 
 # Each tuple: (description, captured_block_hex, AlarmConfig kwargs, alarm_id)
 CASES = [
@@ -79,6 +79,60 @@ CASES = [
              beep=AlarmAction(enabled=True, count=5, intensity=50),
              zap=AlarmAction(enabled=True, count=1, intensity=50)),
         3,
+    ),
+    # Alarm guarantors (May 19 2026 captures). Captured 8am alarm with
+    # weekdays + vibe(50)+zap(5x70%) and a guarantor task selected.
+    # Stim block bytes vary by guarantor: JJ adds JL TLV (HAH=72), QR/Puzzle
+    # have no extra TLV (HAC=67).
+    (
+        "08:00 Jumping Jacks=1 rep (HAH, AO=0x02 + JL)",
+        "48414800414e0500616c61726d544d040000000880574401001e574902000500534e010001414f0100024a4c0100014d4809004d430500850c32fafa5a4806005a4302008546494402000200",
+        dict(hour=8, minute=0, name="alarm", weekdays=0, snooze=True, stimulus_interval=5,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=False),
+             zap=AlarmAction(enabled=True, count=5, intensity=70),
+             guarantor=Guarantor.JUMPING_JACKS, jumping_jacks_count=1),
+        2,
+    ),
+    (
+        "08:00 Jumping Jacks=2 reps (HAH, AO=0x02 + JL)",
+        "48414800414e0500616c61726d544d040000000880574401001e574902000500534e010001414f0100024a4c0100024d4809004d430500850c32fafa5a4806005a4302008546494402000200",
+        dict(hour=8, minute=0, name="alarm", weekdays=0, snooze=True, stimulus_interval=5,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=False),
+             zap=AlarmAction(enabled=True, count=5, intensity=70),
+             guarantor=Guarantor.JUMPING_JACKS, jumping_jacks_count=2),
+        2,
+    ),
+    (
+        "08:00 Jumping Jacks=3 reps (HAH, AO=0x02 + JL)",
+        "48414800414e0500616c61726d544d040000000880574401001e574902000500534e010001414f0100024a4c0100034d4809004d430500850c32fafa5a4806005a4302008546494402000200",
+        dict(hour=8, minute=0, name="alarm", weekdays=0, snooze=True, stimulus_interval=5,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=False),
+             zap=AlarmAction(enabled=True, count=5, intensity=70),
+             guarantor=Guarantor.JUMPING_JACKS, jumping_jacks_count=3),
+        2,
+    ),
+    (
+        "08:00 QR code guarantor (HAC, AO=0x04)",
+        "48414300414e0500616c61726d544d040000000880574401001e574902000500534e010001414f0100044d4809004d430500850c32fafa5a4806005a4302008546494402000200",
+        dict(hour=8, minute=0, name="alarm", weekdays=0, snooze=True, stimulus_interval=5,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=False),
+             zap=AlarmAction(enabled=True, count=5, intensity=70),
+             guarantor=Guarantor.QR_CODE),
+        2,
+    ),
+    (
+        "08:00 Puzzle unlock guarantor (HAC, AO=0x80)",
+        "48414300414e0500616c61726d544d040000000880574401001e574902000500534e010001414f0100804d4809004d430500850c32fafa5a4806005a4302008546494402000200",
+        dict(hour=8, minute=0, name="alarm", weekdays=0, snooze=True, stimulus_interval=5,
+             vibration=AlarmAction(enabled=True, count=5, intensity=50),
+             beep=AlarmAction(enabled=False),
+             zap=AlarmAction(enabled=True, count=5, intensity=70),
+             guarantor=Guarantor.PUZZLE),
+        2,
     ),
 ]
 

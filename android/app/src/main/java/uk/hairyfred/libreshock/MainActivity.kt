@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -87,6 +88,7 @@ import uk.hairyfred.libreshock.ble.formatNextAlarm
 import uk.hairyfred.libreshock.ble.nextEnabledAlarm
 import uk.hairyfred.libreshock.ui.AlarmEditScreen
 import uk.hairyfred.libreshock.ui.AlarmFiringDialog
+import uk.hairyfred.libreshock.ui.AlarmNotifier
 import uk.hairyfred.libreshock.ui.AlarmsScreen
 import uk.hairyfred.libreshock.ui.BatteryUsageScreen
 import uk.hairyfred.libreshock.ui.ButtonsScreen
@@ -146,13 +148,51 @@ fun AppRoot() {
     val rootScope = rememberCoroutineScope()
 
     // Listen for alarm-fire / stop / snooze notifications from the watch.
+    // ALARM_FIRING also posts a system notification with Stop/Snooze actions
+    // so the user can act from the shade without opening the app.
     LaunchedEffect(device) {
         device.alarmEvents.collect { event ->
             when (event.opcode) {
-                NotifyOpcode.ALARM_FIRING -> firingAlarmId = event.alarmId
-                NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> firingAlarmId = null
+                NotifyOpcode.ALARM_FIRING -> {
+                    firingAlarmId = event.alarmId
+                    AlarmNotifier.notifyFiring(context, event.alarmId)
+                }
+                NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> {
+                    firingAlarmId = null
+                    AlarmNotifier.cancel(context)
+                }
             }
         }
+    }
+
+    // Handle Stop / Snooze actions tapped from the system notification.
+    DisposableEffect(context, device) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                when (intent.action) {
+                    AlarmNotifier.ACTION_STOP -> rootScope.launch {
+                        device.stopAlarm()
+                        firingAlarmId = null
+                        AlarmNotifier.cancel(context)
+                    }
+                    AlarmNotifier.ACTION_SNOOZE -> rootScope.launch {
+                        device.snoozeAlarm()
+                        firingAlarmId = null
+                        AlarmNotifier.cancel(context)
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(AlarmNotifier.ACTION_STOP)
+            addAction(AlarmNotifier.ACTION_SNOOZE)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose { try { context.unregisterReceiver(receiver) } catch (_: Exception) {} }
     }
 
     // Battery notifications + on-connect read both feed batteryUpdates;
@@ -221,6 +261,22 @@ fun AppRoot() {
         }
         context.registerReceiver(receiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
         onDispose { try { context.unregisterReceiver(receiver) } catch (_: Exception) {} }
+    }
+
+    // Ask for POST_NOTIFICATIONS once (Android 13+). Soft-requested: declined
+    // doesn't break anything except the system-notification side of alarm
+    // firing — the in-app dialog still works.
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* outcome doesn't gate any UI; rely on whatever the user picked */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+        AlarmNotifier.ensureChannel(context)
     }
 
     // On launch, if BT is off, surface the enable-Bluetooth prompt up front.

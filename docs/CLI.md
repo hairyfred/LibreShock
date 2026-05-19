@@ -84,7 +84,21 @@ Alarm flags:
 - `--vibe-count N`, `--beep-count N` — pulse counts
 - `--interval S` — seconds between stimulus rounds (default 15)
 - `--snooze` / `--no-snooze` — enable / disable snooze (default on)
+- `--guarantor TASK` — wake-up task that must be completed to stop the
+  alarm. One of `none` (default), `jjacks` (Jumping Jacks),
+  `qr` (QR code scan), or `puzzle` (Puzzle unlock). The CLI sets the flag
+  on the watch but doesn't implement the scan/puzzle UI itself — that's
+  the Android app's job. If you set `--guarantor=qr` via the CLI and the
+  alarm fires, you'll need the Android app (or the vendor Pavlok app) to
+  complete the task and stop it.
+- `--jjacks N` — required Jumping-Jacks reps when `--guarantor=jjacks`
+  (1-20, default 5)
 - `-n, --name "Wake up"` — friendly name for the alarm
+
+```
+# 7am alarm that requires 10 jumping jacks to stop
+python libreshock.py alarm -t 7:00 --vibe 60 --zap 40 --guarantor jjacks --jjacks 10
+```
 
 ## Stop / snooze a firing alarm
 

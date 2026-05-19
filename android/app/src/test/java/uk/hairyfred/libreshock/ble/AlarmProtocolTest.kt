@@ -183,6 +183,109 @@ class AlarmProtocolTest {
     }
 
     @Test
+    fun jumpingJacksOneRep() {
+        // 8am alarm, weekdays-bit 0, vibe(50)+zap(5x70), AO=0x02 + JL=1.
+        val captured = hexToBytes(
+            "48414800414e0500616c61726d544d040000000880574401001e574902000500" +
+            "534e010001414f0100024a4c0100014d4809004d430500850c32fafa5a480600" +
+            "5a4302008546494402000200"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 8, minute = 0, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 5,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = false),
+                zap = AlarmAction(enabled = true, count = 5, intensity = 70),
+                guarantor = Guarantor.JUMPING_JACKS, jumpingJacksCount = 1,
+            ),
+            alarmId = 2,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun jumpingJacksThreeReps() {
+        val captured = hexToBytes(
+            "48414800414e0500616c61726d544d040000000880574401001e574902000500" +
+            "534e010001414f0100024a4c0100034d4809004d430500850c32fafa5a480600" +
+            "5a4302008546494402000200"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 8, minute = 0, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 5,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = false),
+                zap = AlarmAction(enabled = true, count = 5, intensity = 70),
+                guarantor = Guarantor.JUMPING_JACKS, jumpingJacksCount = 3,
+            ),
+            alarmId = 2,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun qrCodeGuarantor() {
+        // Same alarm shape, AO=0x04, no JL.
+        val captured = hexToBytes(
+            "48414300414e0500616c61726d544d040000000880574401001e574902000500" +
+            "534e010001414f0100044d4809004d430500850c32fafa5a4806005a43020085" +
+            "46494402000200"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 8, minute = 0, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 5,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = false),
+                zap = AlarmAction(enabled = true, count = 5, intensity = 70),
+                guarantor = Guarantor.QR_CODE,
+            ),
+            alarmId = 2,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun puzzleGuarantor() {
+        val captured = hexToBytes(
+            "48414300414e0500616c61726d544d040000000880574401001e574902000500" +
+            "534e010001414f0100804d4809004d430500850c32fafa5a4806005a43020085" +
+            "46494402000200"
+        )
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 8, minute = 0, name = "alarm",
+                weekdays = 0, snooze = true, stimulusInterval = 5,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = false),
+                zap = AlarmAction(enabled = true, count = 5, intensity = 70),
+                guarantor = Guarantor.PUZZLE,
+            ),
+            alarmId = 2,
+        )
+        assertArrayEquals(captured, ours)
+    }
+
+    @Test
+    fun parsesGuarantorRoundtrip() {
+        // Build → parse → verify the guarantor and JL count survive.
+        val pkt = buildAlarmPacket(listOf(
+            AlarmConfig(
+                hour = 7, minute = 30, name = "morning",
+                weekdays = Weekday.EVERYDAY,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 80),
+                guarantor = Guarantor.JUMPING_JACKS, jumpingJacksCount = 15,
+            ),
+        ))
+        val parsed = parseAlarms(pkt)
+        assertEquals(1, parsed.size)
+        assertEquals(Guarantor.JUMPING_JACKS, parsed[0].guarantor)
+        assertEquals(15, parsed[0].jumpingJacksCount)
+    }
+
+    @Test
     fun crc16IsCcittFalse() {
         // CRC of "123456789" is 0x29B1 for CRC-16/CCITT-FALSE.
         assertEquals(0x29B1, crc16Ccitt("123456789".toByteArray()))
