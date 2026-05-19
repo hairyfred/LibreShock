@@ -90,6 +90,10 @@ import uk.hairyfred.libreshock.ui.AlarmEditScreen
 import uk.hairyfred.libreshock.ui.AlarmFiringDialog
 import uk.hairyfred.libreshock.ui.AlarmNotifier
 import uk.hairyfred.libreshock.ui.AlarmsScreen
+import uk.hairyfred.libreshock.ui.ConfettiOverlay
+import uk.hairyfred.libreshock.ui.StopOrigin
+import uk.hairyfred.libreshock.ui.celebrationParties
+import nl.dionsegijn.konfetti.core.Party
 import uk.hairyfred.libreshock.ui.BatteryUsageScreen
 import uk.hairyfred.libreshock.ui.ButtonsScreen
 import uk.hairyfred.libreshock.ui.DeviceInfoScreen
@@ -149,16 +153,37 @@ fun AppRoot() {
 
     // Listen for alarm-fire / stop / snooze notifications from the watch.
     // ALARM_FIRING also posts a system notification with Stop/Snooze actions
-    // so the user can act from the shade without opening the app.
+    // so the user can act from the shade without opening the app. If the
+    // firing alarm has a QR guarantor, we mark the dialog so its Stop button
+    // becomes "Scan QR to stop", and the notification points back to the app
+    // (since scanning needs the camera) instead of stopping directly.
+    var firingRequiresQrScan by remember { mutableStateOf(false) }
+    var confettiParties by remember { mutableStateOf<List<Party>>(emptyList()) }
+
+    fun celebrate(relX: Float = 0.5f, relY: Float = 0.5f) {
+        if (!prefs.getBoolean("confetti_enabled", false)) return
+        confettiParties = celebrationParties(relX, relY)
+        rootScope.launch {
+            delay(2000)
+            confettiParties = emptyList()
+        }
+    }
     LaunchedEffect(device) {
         device.alarmEvents.collect { event ->
             when (event.opcode) {
                 NotifyOpcode.ALARM_FIRING -> {
+                    // alarm_id from the watch is 1-based; the cached list is
+                    // zero-indexed in the same order setAlarms() wrote them.
+                    val firingAlarm = alarms?.getOrNull(event.alarmId - 1)
+                    val qrGuarded = firingAlarm?.guarantor ==
+                        uk.hairyfred.libreshock.ble.Guarantor.QR_CODE
                     firingAlarmId = event.alarmId
-                    AlarmNotifier.notifyFiring(context, event.alarmId)
+                    firingRequiresQrScan = qrGuarded
+                    AlarmNotifier.notifyFiring(context, event.alarmId, requiresQrScan = qrGuarded)
                 }
                 NotifyOpcode.STOP_OK, NotifyOpcode.SNOOZE_OK -> {
                     firingAlarmId = null
+                    firingRequiresQrScan = false
                     AlarmNotifier.cancel(context)
                 }
             }
@@ -171,14 +196,23 @@ fun AppRoot() {
             override fun onReceive(c: Context, intent: Intent) {
                 when (intent.action) {
                     AlarmNotifier.ACTION_STOP -> rootScope.launch {
-                        device.stopAlarm()
+                        val ok = device.stopAlarm()
                         firingAlarmId = null
+                        firingRequiresQrScan = false
                         AlarmNotifier.cancel(context)
+                        if (ok) celebrate(0.5f, 0.5f)
+                        snackbarHostState.showSnackbar(
+                            if (ok) "Alarm dismissed" else "Failed to stop alarm"
+                        )
                     }
                     AlarmNotifier.ACTION_SNOOZE -> rootScope.launch {
-                        device.snoozeAlarm()
+                        val ok = device.snoozeAlarm()
                         firingAlarmId = null
+                        firingRequiresQrScan = false
                         AlarmNotifier.cancel(context)
+                        snackbarHostState.showSnackbar(
+                            if (ok) "Alarm snoozed" else "Failed to snooze alarm"
+                        )
                     }
                 }
             }
@@ -385,6 +419,13 @@ fun AppRoot() {
                         )
                     }
                 },
+                onConfettiPreview = {
+                    confettiParties = celebrationParties(0.5f, 0.5f)
+                    rootScope.launch {
+                        delay(2000)
+                        confettiParties = emptyList()
+                    }
+                },
             )
             "alarms" -> AlarmsScreen(
                 alarms = alarms,
@@ -461,20 +502,41 @@ fun AppRoot() {
     firingAlarmId?.let { id ->
         AlarmFiringDialog(
             alarmId = id,
-            onStop = {
+            requiresQrScan = firingRequiresQrScan,
+            onStop = { origin ->
                 rootScope.launch {
-                    device.stopAlarm()
+                    val ok = device.stopAlarm()
                     firingAlarmId = null
+                    firingRequiresQrScan = false
+                    if (ok) {
+                        // Stop button sits in the dialog's bottom action row,
+                        // roughly centered horizontally and ~2/3 down vertically.
+                        // QR-scan path returns to a now-empty screen, so fire
+                        // from dead center.
+                        when (origin) {
+                            StopOrigin.BUTTON -> celebrate(0.5f, 0.66f)
+                            StopOrigin.QR_SCAN -> celebrate(0.5f, 0.5f)
+                        }
+                    }
+                    snackbarHostState.showSnackbar(
+                        if (ok) "Alarm dismissed" else "Failed to stop alarm"
+                    )
                 }
             },
             onSnooze = {
                 rootScope.launch {
-                    device.snoozeAlarm()
+                    val ok = device.snoozeAlarm()
                     firingAlarmId = null
+                    firingRequiresQrScan = false
+                    snackbarHostState.showSnackbar(
+                        if (ok) "Alarm snoozed" else "Failed to snooze alarm"
+                    )
                 }
             },
         )
     }
+
+    ConfettiOverlay(parties = confettiParties)
 }
 
 @SuppressLint("MissingPermission")
@@ -684,6 +746,7 @@ private fun SettingsScreen(
     device: ShockDevice,
     padding: PaddingValues,
     onSleepToggle: (Boolean) -> Unit,
+    onConfettiPreview: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -691,6 +754,7 @@ private fun SettingsScreen(
     var autoConnect by remember { mutableStateOf(prefs.getBoolean("auto_connect", true)) }
     var debugLogging by remember { mutableStateOf(prefs.getBoolean("debug_logging", false)) }
     var sleepTracking by remember { mutableStateOf(prefs.getBoolean("sleep_tracking", false)) }
+    var confetti by remember { mutableStateOf(prefs.getBoolean("confetti_enabled", false)) }
     var showExportDialog by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
     val lastName = prefs.getString("last_name", null)
@@ -739,6 +803,17 @@ private fun SettingsScreen(
                 sleepTracking = it
                 prefs.edit { putBoolean("sleep_tracking", it) }
                 onSleepToggle(it)
+            },
+        )
+        SettingRow(
+            label = "Confetti on alarm dismiss",
+            description = "Tiny celebration when an alarm is stopped (not snoozed). Off by default.",
+            checked = confetti,
+            onCheckedChange = {
+                confetti = it
+                prefs.edit { putBoolean("confetti_enabled", it) }
+                // Preview the effect when the user turns it on.
+                if (it) onConfettiPreview()
             },
         )
 

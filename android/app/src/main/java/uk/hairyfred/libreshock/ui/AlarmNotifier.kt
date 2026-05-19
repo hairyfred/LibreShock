@@ -38,7 +38,11 @@ object AlarmNotifier {
         nm.createNotificationChannel(channel)
     }
 
-    fun notifyFiring(context: Context, alarmId: Int) {
+    /** Post the alarm-firing notification. When [requiresQrScan] is true, the
+     *  "Stop" action is replaced with "Open to scan" — the actual stop has
+     *  to be gated by a camera scan inside the app, so the action just brings
+     *  the app to the foreground where the AlarmFiringDialog handles the scan. */
+    fun notifyFiring(context: Context, alarmId: Int, requiresQrScan: Boolean = false) {
         ensureChannel(context)
         val nm = context.getSystemService<NotificationManager>() ?: return
 
@@ -59,20 +63,30 @@ object AlarmNotifier {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification: Notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Alarm firing")
-            .setContentText("Alarm $alarmId is going off")
+            .setContentText(
+                if (requiresQrScan) "Alarm $alarmId — scan the QR to stop"
+                else "Alarm $alarmId is going off"
+            )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(openPi)
-            .addAction(0, "Stop", stopPi)
-            .addAction(0, "Snooze", snoozePi)
-            .build()
 
-        nm.notify(NOTIFICATION_ID, notification)
+        if (requiresQrScan) {
+            // No direct-stop from the shade — scanning needs the camera, so
+            // the action just opens the app. The dialog's "Scan QR" button
+            // handles the actual stop on a successful match.
+            builder.addAction(0, "Open to scan", openPi)
+        } else {
+            builder.addAction(0, "Stop", stopPi)
+        }
+        builder.addAction(0, "Snooze", snoozePi)
+
+        nm.notify(NOTIFICATION_ID, builder.build())
     }
 
     fun cancel(context: Context) {

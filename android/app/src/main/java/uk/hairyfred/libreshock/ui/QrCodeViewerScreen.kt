@@ -1,10 +1,12 @@
 package uk.hairyfred.libreshock.ui
 
 import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -26,11 +28,17 @@ import uk.hairyfred.libreshock.R
 import java.io.File
 import java.io.FileOutputStream
 
+/** Raw GitHub URL for the bundled QR PNG. Opening it in a browser triggers
+ *  a direct download since GitHub serves raw.githubusercontent.com with
+ *  Content-Disposition: attachment. */
+private const val QR_GITHUB_RAW_URL =
+    "https://raw.githubusercontent.com/hairyfred/Libreshock/main/docs/images/libreshock-qr.png"
+
 /**
  *  Shows the bundled LibreShock alarm-stop QR code as a dialog overlay
  *  so the underlying alarm-edit form state is preserved when the user
- *  dismisses it. Includes a print/share action that copies the drawable
- *  out into cache as a PNG and fires Intent.ACTION_SEND via FileProvider.
+ *  dismisses it. Three actions: print/share via local file, download via
+ *  browser (raw GitHub URL), and close.
  */
 @Composable
 fun QrCodeDialog(onDismiss: () -> Unit) {
@@ -68,7 +76,15 @@ fun QrCodeDialog(onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = { shareQrPng(context) }) { Text("Print / share") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { shareQrPng(context) }) { Text("Print / share") }
+                TextButton(onClick = {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(QR_GITHUB_RAW_URL))
+                            .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                    )
+                }) { Text("Download") }
+            }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Close") }

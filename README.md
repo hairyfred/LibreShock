@@ -162,6 +162,9 @@ projects:
   "scan-to-stop" alarm guarantor.
 - **[ZXing core](https://github.com/zxing/zxing)** (Apache 2.0) — the
   decoder zxing-android-embedded wraps.
+- **[Konfetti](https://github.com/DanielMartinus/Konfetti)** (ISC) —
+  the confetti animation shown on successful alarm dismissal (toggleable
+  in Settings, off by default).
 - **AndroidX / Jetpack Compose / Material 3** (Apache 2.0) — the Android
   UI toolkit.
 

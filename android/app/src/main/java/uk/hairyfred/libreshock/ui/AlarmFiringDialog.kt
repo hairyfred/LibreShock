@@ -1,5 +1,6 @@
 package uk.hairyfred.libreshock.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,12 +15,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 
 /**
  * Full-screen overlay shown when the watch reports an alarm is firing
@@ -28,13 +35,36 @@ import androidx.compose.ui.window.DialogProperties
  * Not dismissable by tap-outside or back press — has to be resolved via one
  * of the two buttons (or by stopping/snoozing on the watch itself, which
  * will arrive as a 0x55/0x56 notification and clear the firingAlarmId state).
+ *
+ * When [requiresQrScan] is true, the Stop button is replaced with a "Scan
+ * QR to stop" button that launches the camera. The watch only stops if the
+ * scanned QR content exactly matches [ALARM_QR_CONTENT].
  */
+/** Origin hint passed back to [onStop] so the celebration burst can fire
+ *  from somewhere visually connected to the user's action — Stop button
+ *  for direct dismissal, middle of the screen for a QR scan dismissal. */
+enum class StopOrigin { BUTTON, QR_SCAN }
+
 @Composable
 fun AlarmFiringDialog(
     alarmId: Int,
-    onStop: () -> Unit,
+    requiresQrScan: Boolean,
+    onStop: (StopOrigin) -> Unit,
     onSnooze: () -> Unit,
 ) {
+    var scanError by remember { mutableStateOf<String?>(null) }
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val content = result.contents
+        when {
+            content == null -> { /* user cancelled, no-op */ }
+            content == ALARM_QR_CONTENT -> {
+                scanError = null
+                onStop(StopOrigin.QR_SCAN)
+            }
+            else -> scanError = "Wrong QR code. Scan the LibreShock alarm QR."
+        }
+    }
+
     Dialog(
         onDismissRequest = { /* ignore */ },
         properties = DialogProperties(
@@ -60,9 +90,21 @@ fun AlarmFiringDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Alarm #$alarmId is firing on the watch",
+                    if (requiresQrScan) {
+                        "Alarm #$alarmId is firing. Scan the LibreShock QR to stop."
+                    } else {
+                        "Alarm #$alarmId is firing on the watch"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                scanError?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(24.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -73,13 +115,28 @@ fun AlarmFiringDialog(
                         modifier = Modifier.weight(1f),
                     ) { Text("Snooze") }
                     Button(
-                        onClick = onStop,
+                        onClick = {
+                            if (requiresQrScan) {
+                                val options = ScanOptions().apply {
+                                    setPrompt("Scan the LibreShock alarm QR")
+                                    setBeepEnabled(false)
+                                    setOrientationLocked(false)
+                                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    setCaptureActivity(PortraitCaptureActivity::class.java)
+                                }
+                                scanLauncher.launch(options)
+                            } else {
+                                onStop(StopOrigin.BUTTON)
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.error,
                             contentColor = MaterialTheme.colorScheme.onError,
                         ),
-                    ) { Text("Stop") }
+                    ) {
+                        Text(if (requiresQrScan) "Scan QR" else "Stop")
+                    }
                 }
             }
         }

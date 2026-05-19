@@ -70,6 +70,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // QR scanner used by the alarm QR-guarantor "scan-to-stop" flow.
+    // Apache 2.0; bundles ZXing core — no Google Play Services required.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // Confetti animation on successful alarm dismissal. ISC license.
+    implementation("nl.dionsegijn:konfetti-compose:2.0.5")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
