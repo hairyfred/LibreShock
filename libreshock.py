@@ -215,6 +215,344 @@ def build_tns_config(config: TnsConfig) -> bytes:
     return bytes([0x22]) + struct.pack('<H', len(body)) + body + bytes([0x00])
 
 
+# Sleep tracking history. The watch stores past sleep sessions in flash; the
+# phone fetches them on demand via a request/response protocol on char 2002
+# (the "events" char in service 156e2000). Two query types observed:
+#   0x03 = sleep-stage records (~3-4KB each) — likely watch's own classifier output
+#   0x82 = general event log (alarm sets, BLE traffic, etc.) — not actigraphy
+#
+# Request format (write to char 2002, 9 bytes each, send twice for start+end):
+#   <query_type:1> <session_id:u24-LE> 00 <range:u32-LE>
+#   range=00000000 marks start, range=ffffffff marks end of fetch
+#
+# When session_id=0 the watch returns ALL records of that type concatenated.
+# Otherwise it returns just the one matching session.
+#
+# Response (delivered as notifications on the same char):
+#   14-byte header: <op:1> 00 <id_echo:5> <count:u32-LE> <byte_count:u32-LE>
+#   then `byte_count` bytes of body
+#
+# For the "all sessions" body, each per-session record begins with:
+#   <sub_op:1> 03 <body_len:u16-LE> <session_id:u32-LE> <timestamp:u32-LE>
+# sub_op is 0x3f for the first session and 0x7f for the rest. Timestamps are
+# Unix seconds UTC, anchored near each tracked sleep window (decoded May 2026).
+#
+# The per-session body's TLV format (opcodes 0x01, 0x04, 0x10, 0x11, 0x20,
+# 0x21, 0x22, 0x41 etc.) hasn't been fully decoded — needs controlled
+# captures to map bytes to Awake/REM/Light/Deep stages. Listing sessions and
+# exposing raw bytes for export is what we can ship today.
+CHAR_EVENTS = "00002009-0000-1000-8000-00805f9b34fb"
+
+
+@dataclass
+class SleepSession:
+    """One stored sleep session on the watch."""
+    sid: int               # session ID (sequential)
+    timestamp: int         # Unix epoch seconds (UTC) — checkpoint during the session
+    body: bytes            # raw bytes from the watch (~3-4KB typically)
+
+
+# The watch stores sleep data in TWO formats:
+#
+# 1) Older "summary" format (sessions covering past nights). Each tracked
+#    night appears as a `0x21 <len:1> 0000 <bedtime:u32-LE> <activity-bytes>`
+#    wrapper at the top level of the session body. Each activity byte
+#    represents one 5-minute window's motion intensity (0..255). Length of
+#    the activity byte array equals the night's tracked duration / 5 min.
+#    The vendor app thresholds these to produce Awake / Sleep / Deep, then
+#    runs a proprietary classifier to split Sleep into Light vs REM.
+#
+# 2) Current-night "rich" format (the actively recording session). Per-
+#    segment `0x10 0x03 <dur:u16-LE> <stage:1>` events, recursively wrapped.
+#    Watch's classifier emits these stage codes:
+#      0x11 → Sleep (combined Light+REM — watch doesn't differentiate)
+#      0x13 → rare transient (treated as Sleep)
+#      0x21 → Deep
+#      0x41 → Awake
+#      0x51 → rare transient (treated as Awake)
+#
+# Both formats yield clean Awake / Sleep / Deep totals. The Light/REM split
+# is a phone-side ESTIMATE — we don't have the vendor's proprietary algorithm,
+# so anything we produce is approximate. Set `estimate_rem_split=True` to
+# enable; results are marked `approximate_split=True` so the UI can show
+# them with a "≈" qualifier.
+SLEEP_STAGE_DEEP = 0x21
+SLEEP_STAGE_AWAKE_CODES = {0x41, 0x51}
+SLEEP_STAGE_SLEEP_CODES = {0x11, 0x13}
+
+# Activity-byte thresholds for the older summary format (each byte = 5 min).
+# Derived from grid search vs ground-truth screenshots for two nights
+# (May 14/15 2026). The fit isn't byte-exact — the vendor almost certainly
+# applies per-night calibration we don't replicate — so 3-stage totals are
+# ±25% of vendor output on the worst-case night. Honest approximation.
+SLEEP_ACTIVITY_DEEP_MAX = 2          # activity < 2 → Deep
+SLEEP_ACTIVITY_AWAKE_MIN = 60        # activity >= 60 → Awake
+# Of the Sleep band, the lowest-activity 40% becomes REM under the split.
+SLEEP_REM_FRACTION_OF_SLEEP = 0.40
+SLEEP_WINDOW_SECONDS = 300           # each activity byte = 5 min
+
+
+@dataclass
+class SleepNight:
+    """One tracked night extracted from a session body."""
+    bedtime: int                      # Unix epoch seconds (UTC)
+    wake_time: int                    # bedtime + tracked duration
+    awake_seconds: int
+    sleep_seconds: int                # combined Light+REM (always set)
+    deep_seconds: int
+    light_seconds: int = 0            # 0 unless estimate_rem_split=True
+    rem_seconds: int = 0              # 0 unless estimate_rem_split=True
+    approximate_split: bool = False   # True if light/rem were estimated
+
+    @property
+    def duration_seconds(self) -> int:
+        return self.wake_time - self.bedtime
+
+    @property
+    def total_classified_seconds(self) -> int:
+        return self.awake_seconds + self.sleep_seconds + self.deep_seconds
+
+
+@dataclass
+class SleepSessionData:
+    """Decoded sleep-session timeline. Backwards-compat wrapper around
+    [SleepNight]: a session may contain 0 or more nights."""
+    sid: int
+    session_timestamp: int
+    nights: List["SleepNight"]
+    raw_segments: int                 # diagnostic: how many leaf events were found
+
+    @property
+    def bedtime(self) -> Optional[int]:
+        return self.nights[0].bedtime if self.nights else None
+
+    @property
+    def wake_time(self) -> Optional[int]:
+        return self.nights[-1].wake_time if self.nights else None
+
+    @property
+    def awake_seconds(self) -> int:
+        return sum(n.awake_seconds for n in self.nights)
+
+    @property
+    def sleep_seconds(self) -> int:
+        return sum(n.sleep_seconds for n in self.nights)
+
+    @property
+    def deep_seconds(self) -> int:
+        return sum(n.deep_seconds for n in self.nights)
+
+    @property
+    def total_classified_seconds(self) -> int:
+        return sum(n.total_classified_seconds for n in self.nights)
+
+
+def _split_sleep_into_light_rem(activities: List[int]) -> tuple:
+    """Given the activity values of all Sleep-band 5-min windows, return
+    (rem_seconds, light_seconds) using the lowest-activity 40% as REM.
+
+    This is a phone-side ESTIMATE — the vendor uses a proprietary algorithm.
+    """
+    if not activities:
+        return 0, 0
+    n = len(activities)
+    n_rem = max(0, int(round(n * SLEEP_REM_FRACTION_OF_SLEEP)))
+    rem_seconds = n_rem * SLEEP_WINDOW_SECONDS
+    light_seconds = (n - n_rem) * SLEEP_WINDOW_SECONDS
+    return rem_seconds, light_seconds
+
+
+def _decode_activity_night(bedtime: int, activity_bytes: bytes,
+                           estimate_rem_split: bool) -> SleepNight:
+    """Classify activity bytes (one per 5-min window) into Awake/Sleep/Deep."""
+    awake_activities: List[int] = []
+    sleep_activities: List[int] = []
+    deep_activities: List[int] = []
+    for v in activity_bytes:
+        if v < SLEEP_ACTIVITY_DEEP_MAX:
+            deep_activities.append(v)
+        elif v >= SLEEP_ACTIVITY_AWAKE_MIN:
+            awake_activities.append(v)
+        else:
+            sleep_activities.append(v)
+
+    awake_s = len(awake_activities) * SLEEP_WINDOW_SECONDS
+    sleep_s = len(sleep_activities) * SLEEP_WINDOW_SECONDS
+    deep_s = len(deep_activities) * SLEEP_WINDOW_SECONDS
+
+    wake_time = bedtime + len(activity_bytes) * SLEEP_WINDOW_SECONDS
+    night = SleepNight(
+        bedtime=bedtime,
+        wake_time=wake_time,
+        awake_seconds=awake_s,
+        sleep_seconds=sleep_s,
+        deep_seconds=deep_s,
+    )
+    if estimate_rem_split:
+        rem_s, light_s = _split_sleep_into_light_rem(sleep_activities)
+        night.rem_seconds = rem_s
+        night.light_seconds = light_s
+        night.approximate_split = True
+    return night
+
+
+def parse_sleep_session_body(body: bytes, sid: int, session_ts: int,
+                             estimate_rem_split: bool = False
+                             ) -> SleepSessionData:
+    """Best-effort decode of a single session's body.
+
+    Walks two formats:
+    - Top-level `0x21 <len> 0000 <bedtime-u32> <activity-bytes>` records
+      (older summary format — one record per tracked night).
+    - Recursive `0x10 0x03 <dur> <stage>` leaf events (current-night
+      rich format).
+
+    Yields a list of `SleepNight`s. Set `estimate_rem_split=True` to enable
+    the approximate Light/REM split (off by default — the vendor's exact
+    algorithm is not public).
+    """
+    nights: List[SleepNight] = []
+    consumed = [False] * len(body)
+    window = 14 * 86400
+    lo = session_ts - window
+    hi = session_ts + window
+
+    # Pass 1: summary-format `0x21` wrappers with an embedded bedtime u32.
+    pos = 0
+    while pos + 2 <= len(body):
+        op = body[pos]
+        ln = body[pos + 1]
+        end = pos + 2 + ln
+        if end > len(body):
+            break
+        # 0x21 / len >= 10 with payload[2:6] = bedtime u32 near session_ts.
+        if op == 0x21 and ln >= 10:
+            payload = body[pos + 2:end]
+            v = struct.unpack('<I', payload[2:6])[0]
+            if lo <= v <= hi:
+                activity_bytes = payload[6:]
+                if activity_bytes:
+                    nights.append(_decode_activity_night(
+                        v, activity_bytes, estimate_rem_split))
+                    for i in range(pos, end):
+                        consumed[i] = True
+        pos = end
+
+    # Pass 2: rich-format 0x10/3 segments anywhere not already consumed by
+    # summary records. Build one synthetic night for the segment data.
+    awake = sleep = deep = 0
+    sleep_segments: List[int] = []     # durations, for chronological split
+    awake_segments: List[int] = []
+    deep_segments: List[int] = []
+    seg_count = 0
+
+    def walk(buf: bytes, start: int, end: int) -> None:
+        nonlocal awake, sleep, deep, seg_count
+        p = start
+        while p + 2 <= end:
+            o = buf[p]
+            l = buf[p + 1] if p + 1 < end else 0
+            if p + 2 + l > end:
+                break
+            if any(consumed[p:p + 2 + l]):
+                p += 2 + l
+                continue
+            if o == 0x10 and l == 3:
+                dur = buf[p + 2] | (buf[p + 3] << 8)
+                stage = buf[p + 4]
+                if stage == SLEEP_STAGE_DEEP:
+                    deep += dur
+                    deep_segments.append(dur)
+                elif stage in SLEEP_STAGE_AWAKE_CODES:
+                    awake += dur
+                    awake_segments.append(dur)
+                elif stage in SLEEP_STAGE_SLEEP_CODES:
+                    sleep += dur
+                    sleep_segments.append(dur)
+                seg_count += 1
+            elif l >= 5:
+                walk(buf, p + 2, p + 2 + l)
+            p += 2 + l
+
+    walk(body, 0, len(body))
+
+    if seg_count and (awake + sleep + deep) > 0:
+        # Find bedtime/wake in this body's u32 timestamps.
+        timestamps = []
+        for i in range(len(body) - 4):
+            val = body[i] | (body[i+1] << 8) | (body[i+2] << 16) | (body[i+3] << 24)
+            if lo <= val <= hi:
+                timestamps.append(val)
+        bedtime = wake = 0
+        non_session = sorted(t for t in timestamps if t != session_ts)
+        for i, t1 in enumerate(non_session):
+            for t2 in non_session[i+1:]:
+                delta = t2 - t1
+                if 3.5 * 3600 <= delta <= 14 * 3600:
+                    bedtime, wake = t1, t2
+                    break
+            if bedtime:
+                break
+        if bedtime == 0:
+            bedtime = session_ts
+            wake = session_ts + awake + sleep + deep
+        night = SleepNight(
+            bedtime=bedtime,
+            wake_time=wake,
+            awake_seconds=awake,
+            sleep_seconds=sleep,
+            deep_seconds=deep,
+        )
+        if estimate_rem_split and sleep > 0:
+            # Chronological split: REM is typically more concentrated in the
+            # second half of sleep. Allocate the last 40% of Sleep time to REM.
+            total_rem = int(round(sleep * SLEEP_REM_FRACTION_OF_SLEEP))
+            night.rem_seconds = total_rem
+            night.light_seconds = sleep - total_rem
+            night.approximate_split = True
+        nights.append(night)
+
+    return SleepSessionData(
+        sid=sid,
+        session_timestamp=session_ts,
+        nights=sorted(nights, key=lambda n: n.bedtime),
+        raw_segments=seg_count,
+    )
+
+
+def parse_sleep_sessions(raw: bytes) -> List[SleepSession]:
+    """Parse the response from `read_sleep_index()` into per-session metadata.
+
+    The raw response is the 14-byte header followed by N concatenated
+    session records, each with its own sub-header and TLV body. We don't
+    decode the TLV — just the metadata + raw bytes for later analysis.
+    """
+    if len(raw) < 14:
+        return []
+    sessions: List[SleepSession] = []
+    pos = 14  # skip response header
+    while pos + 12 <= len(raw):
+        op = raw[pos]
+        type_byte = raw[pos + 1]
+        if op not in (0x3f, 0x7f) or type_byte != 0x03:
+            pos += 1
+            continue
+        length = struct.unpack('<H', raw[pos + 2:pos + 4])[0]
+        sid = struct.unpack('<I', raw[pos + 4:pos + 8])[0]
+        ts = struct.unpack('<I', raw[pos + 8:pos + 12])[0]
+        body_start = pos + 12
+        body_end = body_start + length
+        if body_end > len(raw):
+            break
+        sessions.append(SleepSession(
+            sid=sid,
+            timestamp=ts,
+            body=raw[body_start:body_end],
+        ))
+        pos = body_end
+    return sessions
+
+
 # Device identification. Vendor uses "Pavlok-<model>-<id>" today but we match
 # anything starting with "Pavlok" so future name formats (other models or
 # rebrands) still work. Protocol verified on Pavlok-3; other models untested.
@@ -774,7 +1112,7 @@ class ShockDevice:
         try:
             await self.client.write_gatt_char(CHAR_SLEEP_TRACKING, payload, response=True)
             print(f"Sleep tracking {'enabled' if enabled else 'disabled'}.")
-            print("Note: the Pavlok app schedules sleep tracking on the phone side"
+            print("Note: the vendor app schedules sleep tracking on the phone side"
                   " using a time range that's stored locally. Toggling directly via"
                   " libreshock bypasses that — the app may show a blank '-- and --'"
                   " time range until you re-set it in the app.")
@@ -793,6 +1131,66 @@ class ShockDevice:
             print(f"  char-value attempt: {char_error}")
             print(f"  descriptor attempt: {desc_err}")
             return False
+
+    async def read_sleep_index(self, query_type: int = 0x03, session_id: int = 0,
+                                timeout: float = 30.0) -> Optional[bytes]:
+        """Pull stored sleep-session data from the watch via char 2002.
+
+        Defaults fetch the full index of type-0x03 records (the watch's own
+        sleep-stage classifications). Pass a specific [session_id] to fetch
+        just one session, or [query_type]=0x82 for the general event log.
+
+        Returns the assembled raw response (14-byte header + body) or None
+        on timeout / error. Use [parse_sleep_sessions] to decode the
+        per-session metadata; the per-session TLV body is not yet decoded.
+        """
+        received = bytearray()
+        done = asyncio.Event()
+        expected_total = None
+        # The first write produces a 14-byte ack notification we don't want
+        # mixed in with the real response — discard everything before this
+        # flips to False (after the second write goes out).
+        capturing_real_response = False
+
+        def callback(_handle, data: bytearray):
+            nonlocal expected_total
+            if not capturing_real_response:
+                return  # discard the first-write ack
+            received.extend(data)
+            if expected_total is None and len(received) >= 14:
+                expected_total = 14 + struct.unpack('<I', received[10:14])[0]
+            if expected_total is not None and len(received) >= expected_total:
+                done.set()
+
+        try:
+            await self.client.start_notify(CHAR_EVENTS, callback)
+            sid_bytes = struct.pack('<I', session_id)[:3]
+            base = bytes([query_type & 0xFF]) + sid_bytes + bytes([0x00])
+            await self.client.write_gatt_char(
+                CHAR_EVENTS, base + bytes([0x00, 0x00, 0x00, 0x00]), response=True,
+            )
+            # Brief pause to let the first-write ack arrive and be discarded.
+            await asyncio.sleep(0.3)
+            capturing_real_response = True
+            await self.client.write_gatt_char(
+                CHAR_EVENTS, base + bytes([0xff, 0xff, 0xff, 0xff]), response=True,
+            )
+            await asyncio.wait_for(done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            if len(received) == 0:
+                return None
+            # Best-effort partial return
+        finally:
+            try:
+                await self.client.stop_notify(CHAR_EVENTS)
+            except Exception:
+                pass
+        return bytes(received)
+
+    async def list_sleep_sessions(self) -> List[SleepSession]:
+        """Convenience wrapper: fetch the index and parse session metadata."""
+        raw = await self.read_sleep_index(query_type=0x03, session_id=0)
+        return parse_sleep_sessions(raw or b'')
 
     async def stop_alarm(self) -> bool:
         """Stop a currently-firing alarm on the device.
@@ -1437,6 +1835,17 @@ async def main():
     parser.add_argument("--duration", type=int, default=60, metavar="SEC",
                         help="With 'timer': countdown duration in seconds (default: 60). Ignored for 'stopwatch'.")
 
+    # Sleep history options
+    parser.add_argument("--dump-session", type=int, default=None, metavar="SID",
+                        help="With 'sleep': dump raw bytes for one session ID to sleep-session-<sid>.bin")
+    parser.add_argument("--decode", action="store_true",
+                        help="With 'sleep --list': decode each session into per-night summaries "
+                             "(bedtime, wake, Awake/Sleep/Deep totals).")
+    parser.add_argument("--estimate-rem", action="store_true",
+                        help="With 'sleep --list --decode': also estimate Light/REM split of the "
+                             "Sleep band. The watch only stores 3 stages — the vendor app applies "
+                             "a proprietary classifier to split Sleep. Our estimate is approximate.")
+
     args = parser.parse_args()
 
     # Handle help
@@ -1466,9 +1875,70 @@ async def main():
             requested = None
             if args.sleep_on: requested = True
             elif args.sleep_off: requested = False
-            if requested is None:
+            if args.list:
+                # List all stored sleep sessions on the watch.
+                sessions = await device.list_sleep_sessions()
+                if not sessions:
+                    print("No sleep sessions found (or fetch failed).")
+                else:
+                    from datetime import datetime, timezone
+                    print(f"Found {len(sessions)} sleep sessions on watch:")
+                    for s in sessions:
+                        try:
+                            dt = datetime.fromtimestamp(s.timestamp, tz=timezone.utc)
+                            dt_str = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                        except Exception:
+                            dt_str = f"ts={s.timestamp}"
+                        print(f"  sid={s.sid:3d}  {dt_str}  ({len(s.body)} bytes)")
+                        if args.decode:
+                            decoded = parse_sleep_session_body(
+                                s.body, s.sid, s.timestamp,
+                                estimate_rem_split=args.estimate_rem,
+                            )
+                            if not decoded.nights:
+                                print("        (no recognisable per-night data — "
+                                      "likely an empty / heartbeat-only session)")
+                            for night in decoded.nights:
+                                bt = datetime.fromtimestamp(
+                                    night.bedtime, tz=timezone.utc).astimezone()
+                                wk = datetime.fromtimestamp(
+                                    night.wake_time, tz=timezone.utc).astimezone()
+                                total_min = night.duration_seconds // 60
+                                print(f"        bed {bt.strftime('%a %d %b %H:%M')} "
+                                      f"-> wake {wk.strftime('%H:%M')}  "
+                                      f"(tracked {total_min//60}h{total_min%60:02d}m)")
+                                a = night.awake_seconds // 60
+                                d = night.deep_seconds // 60
+                                if night.approximate_split:
+                                    l = night.light_seconds // 60
+                                    r = night.rem_seconds // 60
+                                    print(f"          Awake {a}m  "
+                                          f"≈Light {l}m  ≈REM {r}m  Deep {d}m  "
+                                          f"(Light/REM are approximate — phone-side estimate)")
+                                else:
+                                    s_m = night.sleep_seconds // 60
+                                    print(f"          Awake {a}m  Sleep {s_m}m  Deep {d}m")
+                    if not args.decode:
+                        print("Pass --decode to extract per-night Awake/Sleep/Deep totals; "
+                              "add --estimate-rem for an approximate Light/REM split. "
+                              "The watch only stores 3 stages — the vendor app applies its "
+                              "own classifier to derive Light/REM, which we approximate.")
+            elif args.dump_session is not None:
+                # Fetch one specific session and write raw bytes to a file.
+                sid = args.dump_session
+                raw = await device.read_sleep_index(query_type=0x03, session_id=sid)
+                if raw is None or len(raw) == 0:
+                    print(f"Session {sid}: no data returned")
+                else:
+                    path = f"sleep-session-{sid}.bin"
+                    with open(path, "wb") as f:
+                        f.write(raw)
+                    print(f"Wrote {len(raw)} bytes to {path}")
+            elif requested is None:
                 print("Usage: python libreshock.py sleep --on    (enable sleep tracking)")
                 print("       python libreshock.py sleep --off   (disable sleep tracking)")
+                print("       python libreshock.py sleep --list  (list stored sessions)")
+                print("       python libreshock.py sleep --dump-session <sid>  (raw bytes)")
             else:
                 await device.set_sleep_tracking(requested)
         elif args.action == "button":
@@ -1552,7 +2022,7 @@ async def main():
                 # Clear by sending empty alarm packet
                 await device.set_alarms([])
                 print("Alarms cleared.")
-                print("Note: the official Pavlok app may still show these alarms "
+                print("Note: the vendor app may still show these alarms "
                       "cached locally — they're no longer on the watch.")
 
             elif args.enable is not None or args.disable is not None:

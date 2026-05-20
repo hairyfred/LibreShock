@@ -124,7 +124,7 @@ fun HandRaiseScreen(
                     StimRow(c, HandRaiseStim.COUNTDOWN) { config = c.copy(stimulus = it) }
                 }
 
-                // Only Zap exposes an intensity slider (the Pavlok app same).
+                // Only Zap exposes an intensity slider (the vendor app same).
                 if (c.stimulus == HandRaiseStim.ZAP) {
                     Spacer(Modifier.height(12.dp))
                     Text(

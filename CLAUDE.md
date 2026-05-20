@@ -468,6 +468,76 @@ Stim type:
 Intensity is 0-100; only Zap exposes a slider in the vendor app — the others
 use a fixed `0x1e` (30).
 
+### Sleep tracking history (service 156e2000, char 2002)
+
+The watch stores past sleep sessions in flash. The phone fetches them via
+a request/response protocol on the "events" characteristic (handle ~0x004A,
+UUID `00002002-0000-1000-8000-00805f9b34fb`).
+
+Two query types observed:
+- `0x03` — sleep-stage records (~3-4KB per session). Watch's own classifier output.
+- `0x82` — general event log (alarm sets, BLE traffic, etc.). **Not** actigraphy.
+
+Request format (write 9 bytes to char 2002, twice for start+end):
+
+```
+<query_type:1> <session_id:u24-LE> 00 <range:u32-LE>
+range = 00000000 marks fetch start; range = ffffffff marks fetch end.
+session_id = 0 returns ALL records of that type concatenated.
+```
+
+Response (delivered as notifications on the same char):
+
+```
+14-byte header: <op:1> 00 <id_echo:5> <count:u32-LE> <byte_count:u32-LE>
+Then byte_count bytes of body.
+```
+
+For the "all sessions" body, each per-session record begins with:
+
+```
+<sub_op:1> 03 <body_len:u16-LE> <session_id:u32-LE> <timestamp:u32-LE>
+sub_op = 0x3f for the first session, 0x7f for subsequent ones.
+timestamp = Unix epoch seconds UTC, monotonic across sessions.
+```
+
+Each session covers about a week of sleep tracking (a single session can
+contain multiple nights). The watch uses **two different per-night formats**
+inside the body — both yield clean Awake / Sleep / Deep totals, but **not**
+a real Light vs REM split:
+
+1. **Older "summary" format** (sessions covering past nights): top-level
+   `0x21 <len:1> 00 00 <bedtime:u32-LE> <activity-bytes>` wrappers, one
+   per tracked night. Each activity byte represents one **5-minute window**'s
+   motion intensity (0..255). Length of the activity-byte array = night's
+   tracked duration ÷ 5 min. Phone-side thresholds yield 3-stage:
+   `< 2 = Deep`, `≥ 60 = Awake`, otherwise Sleep.
+
+2. **Current-night "rich" format** (the actively recording session, with
+   the largest sid): recursive `0x10 0x03 <dur:u16-LE> <stage:1>` segments
+   with stage codes:
+   - `0x11` → Sleep (combined Light + REM)
+   - `0x13` → rare transient (treated as Sleep)
+   - `0x21` → Deep
+   - `0x41` → Awake
+   - `0x51` → rare transient (treated as Awake)
+
+The watch does NOT separately store Light vs REM. The vendor app applies
+a **proprietary post-classifier** to split Sleep into Light + REM —
+re-implementing that exactly is not feasible without firmware access.
+LibreShock can OPTIONALLY apply its own approximation (lowest-activity
+40% of Sleep band → REM; for segment-based data, last 40% of Sleep time
+chronologically → REM). Results are flagged `approximate_split=True` so
+the UI / CLI shows them with a `≈` qualifier.
+
+Verified May 20 2026 against the user's vendor-app screenshots for two nights:
+- May 14 2026: 7h50m total (Awake 15 / REM 165 / Light 165 / Deep 135 min)
+- May 15 2026: 7h06m total (Awake 30 / REM 105 / Light 255 / Deep 45 min)
+
+3-stage totals match approximately (within ~25% per stage on the worse
+night); 4-stage with the LibreShock approximation is close but not
+byte-exact to vendor-app output. The setting is OFF by default.
+
 ### Sleep tracking (service 156e0000, char 0008)
 
 The watch can stream actigraphy samples (accelerometer-derived motion data)

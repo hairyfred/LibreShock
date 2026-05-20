@@ -15,8 +15,8 @@ android {
         applicationId = "uk.hairyfred.libreshock"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 9
+        versionName = "0.1.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -57,6 +57,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // BuildConfig.VERSION_NAME is read by the GitHub-release update checker.
+        buildConfig = true
     }
 }
 

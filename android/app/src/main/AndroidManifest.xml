@@ -25,6 +25,11 @@
          user triggers a scan. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Used only by the GitHub-releases update checker. No data is sent to
+         the server; we just GET the latest-release metadata. Toggle is in
+         Settings → Check for updates automatically. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />

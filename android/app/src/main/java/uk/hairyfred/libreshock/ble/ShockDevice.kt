@@ -80,6 +80,12 @@ class ShockDevice(private val context: Context) {
         // Payload: [0x02, slot, action_class, ...params]
         val CHAR_BUTTON_CONFIG: UUID = UUID.fromString("00007001-0000-1000-8000-00805f9b34fb")
 
+        // Sleep-history request/response endpoint (service 156e2000, char 2009).
+        // Confirmed via handle 0x004A in the watch's GATT tree — char 2002 at
+        // handle 0x002E is a *different* events characteristic. See
+        // SleepHistory.kt for the request/response protocol.
+        val CHAR_EVENTS: UUID = UUID.fromString("00002009-0000-1000-8000-00805f9b34fb")
+
         // Standard Device Information Service (0x180A)
         val CHAR_MANUFACTURER: UUID = UUID.fromString("00002a29-0000-1000-8000-00805f9b34fb")
         val CHAR_MODEL: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
@@ -116,6 +122,7 @@ class ShockDevice(private val context: Context) {
     // Channels for receiving notifications from specific characteristics
     private val dataNotifs = Channel<ByteArray>(Channel.UNLIMITED)
     private val ctrlNotifs = Channel<ByteArray>(Channel.UNLIMITED)
+    private val eventsNotifs = Channel<ByteArray>(Channel.UNLIMITED)
 
     private val _alarmEvents = MutableSharedFlow<NotifyEvent>(extraBufferCapacity = 16)
     /** Persistent stream of alarm-fire / stop / snooze events from the watch. */
@@ -201,6 +208,59 @@ class ShockDevice(private val context: Context) {
         gattMutex.withLock {
             writeChar(CHAR_BUTTON_CONFIG, buildTnsConfig(config))
         }
+
+    /** Pull stored sleep-session data from the watch via char 2002.
+     *
+     *  Defaults fetch the full index of type-0x03 records (the watch's own
+     *  sleep-stage classifications). Pass a specific [sessionId] to fetch
+     *  one session only, or [queryType] = 0x82 for the general event log.
+     *
+     *  Returns the assembled raw response (14-byte header + body) or null
+     *  on timeout. Use [parseSleepSessions] to extract per-session metadata.
+     *  The per-session TLV body isn't fully decoded yet — see SleepHistory.kt. */
+    suspend fun readSleepIndex(
+        queryType: Int = 0x03,
+        sessionId: Int = 0,
+        timeoutMs: Long = 30_000L,
+    ): ByteArray? = gattMutex.withLock {
+        drain(eventsNotifs)
+        if (!writeChar(CHAR_EVENTS, buildSleepRequest(queryType, sessionId, rangeEnd = false))) {
+            return@withLock null
+        }
+        // The first write produces a 14-byte ack notification we don't need.
+        // Drain it (with a short timeout) before sending the end-of-range
+        // write that actually triggers the data stream.
+        withTimeoutOrNull(2000) { eventsNotifs.receive() }
+        drain(eventsNotifs)
+
+        if (!writeChar(CHAR_EVENTS, buildSleepRequest(queryType, sessionId, rangeEnd = true))) {
+            return@withLock null
+        }
+        val buffer = ArrayList<Byte>(4096)
+        var expectedTotal: Int? = null
+        var firstChunk = true
+        while (true) {
+            val gap = if (firstChunk) timeoutMs else 1500L
+            val chunk = withTimeoutOrNull(gap) { eventsNotifs.receive() } ?: break
+            for (b in chunk) buffer.add(b)
+            firstChunk = false
+            if (expectedTotal == null && buffer.size >= 14) {
+                expectedTotal = 14 +
+                    ((buffer[10].toInt() and 0xFF)) +
+                    ((buffer[11].toInt() and 0xFF) shl 8) +
+                    ((buffer[12].toInt() and 0xFF) shl 16) +
+                    ((buffer[13].toInt() and 0xFF) shl 24)
+            }
+            if (expectedTotal != null && buffer.size >= expectedTotal!!) break
+        }
+        if (buffer.isEmpty()) null else buffer.toByteArray()
+    }
+
+    /** Convenience wrapper: fetch the index and parse session metadata. */
+    suspend fun listSleepSessions(): List<SleepSession> {
+        val raw = readSleepIndex(queryType = 0x03, sessionId = 0) ?: return emptyList()
+        return parseSleepSessions(raw)
+    }
 
     /** Build a human-readable debug report describing this device — BLE name,
      *  manufacturer/model/serial/fw/hw, every service, char and descriptor
@@ -483,7 +543,7 @@ class ShockDevice(private val context: Context) {
 
     private suspend fun setupNotifications(): Boolean {
         val g = gatt ?: return false
-        for (uuid in listOf(CHAR_DATA, CHAR_CTRL, CHAR_NOTIFY, CHAR_BATTERY)) {
+        for (uuid in listOf(CHAR_DATA, CHAR_CTRL, CHAR_NOTIFY, CHAR_BATTERY, CHAR_EVENTS)) {
             val char = findCharacteristic(g, uuid)
             if (char == null) {
                 Log.e(TAG, "Char $uuid not found for notification setup")
@@ -615,6 +675,7 @@ class ShockDevice(private val context: Context) {
         when (uuid) {
             CHAR_DATA -> dataNotifs.trySend(value)
             CHAR_CTRL -> ctrlNotifs.trySend(value)
+            CHAR_EVENTS -> eventsNotifs.trySend(value)
             CHAR_NOTIFY -> parseNotifyEvent(value)?.let { _alarmEvents.tryEmit(it) }
             CHAR_BATTERY -> value.firstOrNull()?.let {
                 _batteryUpdates.tryEmit(it.toInt() and 0xFF)

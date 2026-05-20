@@ -91,7 +91,7 @@ Alarm flags:
   `qr` (QR code scan), or `puzzle` (Puzzle unlock). The CLI sets the flag
   on the watch but doesn't implement the scan/puzzle UI itself — that's
   the Android app's job. If you set `--guarantor=qr` via the CLI and the
-  alarm fires, you'll need the Android app (or the vendor Pavlok app) to
+  alarm fires, you'll need the Android app (or the vendor app) to
   complete the task and stop it.
 - `--jjacks N` — required Jumping-Jacks reps when `--guarantor=jjacks`
   (1-20, default 5)
@@ -106,7 +106,7 @@ Alarm flags:
 - `--smart-alarm` — after dismiss, watch re-arms if it detects no
   motion (~5 min default re-fire, ~30 min total). Vendor app exposes
   no slider for the timing values, so the CLI sends the same bytes
-  the Pavlok app does.
+  the vendor app does.
 
 ```
 # 7am alarm that requires 10 jumping jacks to stop
@@ -219,11 +219,39 @@ This project doesn't yet parse the raw stream into sleep stages — that's
 a separate signal-processing job. The watch itself only knows "track" or
 "don't track"; the staging happens in software downstream.
 
-**Heads up:** the Pavlok app stores its sleep-tracking time range locally
+**Heads up:** the vendor app stores its sleep-tracking time range locally
 on the phone, not on the watch. If you toggle via libreshock the watch
-will obey, but the Pavlok app may show a blank "-- and --" time range
+will obey, but the vendor app may show a blank "-- and --" time range
 afterwards because we bypassed its scheduling. Re-set the time range in
-the Pavlok app to clear the blank state.
+the vendor app to clear the blank state.
+
+### Sleep history
+
+The watch retains past sleep sessions in flash. LibreShock can enumerate
+them, decode per-night summaries (bedtime, wake, Awake/Sleep/Deep totals),
+and export raw bytes for offline analysis.
+
+```
+# List stored sleep sessions (metadata only)
+python libreshock.py sleep --list
+
+# Decode each session into per-night Awake / Sleep / Deep
+python libreshock.py sleep --list --decode
+
+# Same but with an approximate Light/REM split of the Sleep band
+python libreshock.py sleep --list --decode --estimate-rem
+
+# Save one session's raw bytes for later analysis
+python libreshock.py sleep --dump-session 77
+```
+
+Each session covers about a week of tracking (one session can contain
+multiple nights). The watch only stores three stages —
+**Awake / Sleep / Deep**. The vendor app applies a proprietary classifier
+to split Sleep into Light + REM; pass `--estimate-rem` to apply
+LibreShock's own approximation (lowest-activity 40% of the Sleep band →
+REM). Approximate values are printed with a `≈` qualifier and are not
+byte-exact to the vendor app.
 
 ## Timer & Stopwatch
 

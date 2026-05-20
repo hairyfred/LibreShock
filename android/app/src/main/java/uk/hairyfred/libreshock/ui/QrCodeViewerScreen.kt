@@ -57,7 +57,7 @@ fun QrCodeDialog(onDismiss: () -> Unit) {
                 )
                 Text(
                     "Note: this is the LibreShock QR. It's different from the QR the " +
-                        "official Pavlok app uses — scanning the Pavlok QR with " +
+                        "vendor app uses — scanning the vendor QR with " +
                         "LibreShock won't stop the alarm, and vice versa.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

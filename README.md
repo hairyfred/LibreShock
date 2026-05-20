@@ -30,6 +30,12 @@ Two interfaces:
   on any alarm — Snooze Zap, Light Sleep, Escalating Alarm, Smart Alarm
 - Configure the watch's Timer and Stopwatch with one or more recurring
   stim intervals (vibe / beep / zap, every N seconds)
+- List sleep sessions stored on the watch and decode per-night summaries
+  (bedtime, wake-up, Awake/Sleep/Deep totals). The watch only records
+  3 stages; an optional setting (default off) applies an approximate
+  Light/REM split phone-side, labelled with `≈` to show it isn't byte-
+  exact to the vendor's proprietary algorithm. Raw bytes can still be
+  exported for offline analysis.
 - Stop or snooze a currently-firing alarm from the phone / desktop
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity
@@ -144,6 +150,7 @@ scripts/
   verify_combos.py             Byte-exact test vs captured vendor packets
   parse_alarm_packet.py        Decode a single packet
   timeline.py                  Chronological dump of writes/notifications
+  decode_sleep_capture.py      Reassemble + decode sleep-history response from a btsnoop
   generate_qr.py               Regenerate the bundled alarm-stop QR PNG
 docs/images/libreshock-qr.png  Printable alarm-stop QR (QR guarantor)
 CLAUDE.md            Full reverse-engineered protocol documentation

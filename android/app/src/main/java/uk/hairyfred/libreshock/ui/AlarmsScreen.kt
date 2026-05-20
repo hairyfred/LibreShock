@@ -134,7 +134,7 @@ fun AlarmsScreen(
             text = {
                 Text(
                     "This removes every alarm from the watch.\n\n" +
-                    "The official Pavlok app may still show these alarms — it caches " +
+                    "The vendor app may still show these alarms — it caches " +
                     "them locally and isn't aware they were removed. They are no longer " +
                     "on the watch itself."
                 )
@@ -698,7 +698,7 @@ private fun GuarantorRow(guarantor: Guarantor, selected: Boolean, onClick: () ->
                     Guarantor.NONE -> "Stop the alarm with a single tap"
                     Guarantor.JUMPING_JACKS -> "Watch counts your jumps before the alarm stops"
                     Guarantor.QR_CODE -> "Scan a printed QR code in the LibreShock app to stop the alarm"
-                    Guarantor.PUZZLE -> "Vendor-app only for now — stop via the watch or the Pavlok app"
+                    Guarantor.PUZZLE -> "Vendor-app only for now — stop via the watch or the vendor app"
                 },
                 style = MaterialTheme.typography.bodySmall,
             )

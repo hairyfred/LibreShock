@@ -102,6 +102,9 @@ import uk.hairyfred.libreshock.ui.BatteryUsageScreen
 import uk.hairyfred.libreshock.ui.ButtonsScreen
 import uk.hairyfred.libreshock.ui.DeviceInfoScreen
 import uk.hairyfred.libreshock.ui.HandRaiseScreen
+import uk.hairyfred.libreshock.ble.SleepNight
+import uk.hairyfred.libreshock.ui.SleepHistoryScreen
+import uk.hairyfred.libreshock.ui.SleepNightDetailScreen
 import uk.hairyfred.libreshock.ui.TimerStopwatchScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
 
@@ -123,6 +126,10 @@ fun AppRoot() {
     var screen by remember { mutableStateOf("main") }
     var editingAlarm by remember { mutableStateOf<AlarmConfig?>(null) }
     var editingIndex by remember { mutableStateOf<Int?>(null) }
+    // Selected night + its session bytes when viewing the per-night detail.
+    var viewingNight by remember { mutableStateOf<SleepNight?>(null) }
+    var viewingNightSid by remember { mutableStateOf(0) }
+    var viewingNightBody by remember { mutableStateOf<ByteArray?>(null) }
     var firingAlarmId by remember { mutableStateOf<Int?>(null) }
     var batteryPercent by remember { mutableStateOf<Int?>(null) }
     var nextAlarmLabel by remember { mutableStateOf<String?>(null) }
@@ -352,6 +359,33 @@ fun AppRoot() {
         }
     }
 
+    // Background check for newer GitHub releases. Rate-limited to once per
+    // 24h via SharedPreferences, opt-out via Settings → "Check for updates
+    // automatically". Tapping the snackbar action opens the releases page.
+    LaunchedEffect(Unit) {
+        if (uk.hairyfred.libreshock.ui.UpdateChecker.shouldAutoCheck(prefs)) {
+            val res = uk.hairyfred.libreshock.ui.UpdateChecker.check(
+                currentVersion = uk.hairyfred.libreshock.BuildConfig.VERSION_NAME,
+                prefs = prefs,
+            )
+            if (res is uk.hairyfred.libreshock.ui.UpdateCheckResult.Ok && res.info.isNewer) {
+                val result = snackbarHostState.showSnackbar(
+                    message = "Update available: ${res.info.latestTag}",
+                    actionLabel = "Open",
+                    duration = SnackbarDuration.Long,
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, android.net.Uri.parse(res.info.htmlUrl))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     // When the watch drops out from under us while BT is on (e.g. out of range
     // or watch reboot), try to reconnect. If BT is off we let the broadcast
     // receiver above handle it once BT comes back.
@@ -388,6 +422,8 @@ fun AppRoot() {
         "hand_raise" -> "Hand raise detection"
         "buttons" -> "Configure device buttons"
         "tns" -> "Timer & Stopwatch"
+        "sleep_history" -> "Sleep history"
+        "sleep_night" -> "Sleep details"
         "puzzle_solve" -> "Solve to dismiss"
         else -> "LibreShock"
     }
@@ -397,6 +433,7 @@ fun AppRoot() {
     BackHandler(enabled = screen != "main" && screen != "puzzle_solve") {
         screen = when (screen) {
             "alarm_edit" -> "alarms"
+            "sleep_night" -> "sleep_history"
             else -> "main"
         }
     }
@@ -412,6 +449,7 @@ fun AppRoot() {
                         IconButton(onClick = {
                             screen = when (screen) {
                                 "alarm_edit" -> "alarms"
+                                "sleep_night" -> "sleep_history"
                                 else -> "main"
                             }
                         }) {
@@ -434,16 +472,6 @@ fun AppRoot() {
                 prefs = prefs,
                 device = device,
                 padding = padding,
-                onSleepToggle = { wantOn ->
-                    rootScope.launch {
-                        val ok = try { device.setSleepTracking(wantOn) } catch (_: Exception) { false }
-                        val word = if (wantOn) "enabled" else "disabled"
-                        snackbarHostState.showSnackbar(
-                            if (ok) "Sleep tracking $word — Pavlok app may show '-- and --' for the time range; re-set it there if you need scheduling"
-                            else "Failed to toggle sleep tracking"
-                        )
-                    }
-                },
                 onConfettiPreview = {
                     confettiParties = celebrationParties(0.5f, 0.5f)
                     rootScope.launch {
@@ -517,6 +545,35 @@ fun AppRoot() {
                     rootScope.launch { snackbarHostState.showSnackbar(msg) }
                 },
             )
+            "sleep_history" -> SleepHistoryScreen(
+                device = device,
+                padding = padding,
+                sleepTrackingEnabled = prefs.getBoolean("sleep_tracking", false),
+                onSleepTrackingToggle = { wantOn ->
+                    rootScope.launch {
+                        val ok = try { device.setSleepTracking(wantOn) } catch (_: Exception) { false }
+                        if (ok) prefs.edit { putBoolean("sleep_tracking", wantOn) }
+                        snackbarHostState.showSnackbar(
+                            if (ok) "Sleep tracking ${if (wantOn) "enabled" else "disabled"}"
+                            else "Failed to toggle sleep tracking"
+                        )
+                    }
+                },
+                onViewNight = { night, sid, body ->
+                    viewingNight = night
+                    viewingNightSid = sid
+                    viewingNightBody = body
+                    screen = "sleep_night"
+                },
+            )
+            "sleep_night" -> viewingNight?.let { n ->
+                SleepNightDetailScreen(
+                    night = n,
+                    sessionId = viewingNightSid,
+                    rawBody = viewingNightBody,
+                    padding = padding,
+                )
+            } ?: run { screen = "sleep_history" }
             "puzzle_solve" -> {
                 val allowMem = prefs.getBoolean("puzzle_memory_enabled", true)
                 val allowEq = prefs.getBoolean("puzzle_equation_enabled", true)
@@ -567,6 +624,7 @@ fun AppRoot() {
                 onOpenHandRaise = { screen = "hand_raise" },
                 onOpenButtons = { screen = "buttons" },
                 onOpenTns = { screen = "tns" },
+                onOpenSleepHistory = { screen = "sleep_history" },
             )
         }
     }
@@ -632,6 +690,7 @@ fun ConnectionFlow(
     onOpenHandRaise: () -> Unit,
     onOpenButtons: () -> Unit,
     onOpenTns: () -> Unit,
+    onOpenSleepHistory: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -809,6 +868,7 @@ fun ConnectionFlow(
                 onHandRaise = onOpenHandRaise,
                 onButtons = onOpenButtons,
                 onTns = onOpenTns,
+                onSleepHistory = onOpenSleepHistory,
                 onDisconnect = {
                     device.disconnect()
                     isConnected = false
@@ -826,15 +886,21 @@ private fun SettingsScreen(
     prefs: SharedPreferences,
     device: ShockDevice,
     padding: PaddingValues,
-    onSleepToggle: (Boolean) -> Unit,
     onConfettiPreview: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var autoScan by remember { mutableStateOf(prefs.getBoolean("auto_scan", true)) }
     var autoConnect by remember { mutableStateOf(prefs.getBoolean("auto_connect", true)) }
+    var updateCheckEnabled by remember {
+        mutableStateOf(prefs.getBoolean(
+            uk.hairyfred.libreshock.ui.UpdateChecker.PREF_AUTO_CHECK,
+            uk.hairyfred.libreshock.ui.UpdateChecker.AUTO_CHECK_DEFAULT))
+    }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    var updateNeedsAppSettings by remember { mutableStateOf(false) }
     var debugLogging by remember { mutableStateOf(prefs.getBoolean("debug_logging", false)) }
-    var sleepTracking by remember { mutableStateOf(prefs.getBoolean("sleep_tracking", false)) }
     var confetti by remember { mutableStateOf(prefs.getBoolean("confetti_enabled", false)) }
     var puzzleMemory by remember { mutableStateOf(prefs.getBoolean("puzzle_memory_enabled", true)) }
     var puzzleEquation by remember { mutableStateOf(prefs.getBoolean("puzzle_equation_enabled", true)) }
@@ -870,16 +936,123 @@ private fun SettingsScreen(
                 prefs.edit { putBoolean("auto_connect", it) }
             },
         )
-        SettingRow(
-            label = "Automatic sleep tracking",
-            description = "Tells the watch to start/stop streaming sleep-tracking data. Time-range scheduling lives in the official Pavlok app — toggling here may blank its time range until you re-set it.",
-            checked = sleepTracking,
-            onCheckedChange = {
-                sleepTracking = it
-                prefs.edit { putBoolean("sleep_tracking", it) }
-                onSleepToggle(it)
-            },
-        )
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Check for updates automatically",
+                            style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Once per day on launch, ping GitHub for a newer " +
+                                "LibreShock release. If found, a snackbar appears " +
+                                "with a link to the Releases page. Off by default — " +
+                                "turning it on opens system app info so you can " +
+                                "confirm LibreShock is allowed to use the network.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(checked = updateCheckEnabled, onCheckedChange = { wantOn ->
+                        updateCheckEnabled = wantOn
+                        prefs.edit { putBoolean(
+                            uk.hairyfred.libreshock.ui.UpdateChecker.PREF_AUTO_CHECK, wantOn) }
+                        // When the user opts in, deep-link to the app's
+                        // system Settings page so they can confirm network
+                        // access is allowed — the most common reason an
+                        // update check silently fails.
+                        if (wantOn) {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(
+                                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        android.net.Uri.fromParts("package", context.packageName, null),
+                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                        }
+                    })
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Current version: ${uk.hairyfred.libreshock.BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (updateStatus != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(updateStatus!!, style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = !checkingUpdate,
+                        onClick = {
+                            scope.launch {
+                                checkingUpdate = true
+                                updateStatus = "Checking GitHub…"
+                                uk.hairyfred.libreshock.ui.UpdateChecker.resetLastCheck(prefs)
+                                val res = uk.hairyfred.libreshock.ui.UpdateChecker.check(
+                                    currentVersion = uk.hairyfred.libreshock.BuildConfig.VERSION_NAME,
+                                    prefs = prefs,
+                                )
+                                updateStatus = when (res) {
+                                    is uk.hairyfred.libreshock.ui.UpdateCheckResult.Ok -> {
+                                        updateNeedsAppSettings = false
+                                        if (res.info.isNewer)
+                                            "Update available: ${res.info.latestTag}"
+                                        else "You're on the latest release (${res.info.latestTag})."
+                                    }
+                                    is uk.hairyfred.libreshock.ui.UpdateCheckResult.Failed ->
+                                        when (res.error) {
+                                            uk.hairyfred.libreshock.ui.UpdateCheckError.NoNetwork -> {
+                                                updateNeedsAppSettings = true
+                                                "Couldn't reach GitHub. If you have a connection, " +
+                                                    "LibreShock may be blocked from using mobile " +
+                                                    "data or Wi-Fi — open app info to re-enable."
+                                            }
+                                            uk.hairyfred.libreshock.ui.UpdateCheckError.Other -> {
+                                                updateNeedsAppSettings = false
+                                                "GitHub didn't respond as expected. Try again later."
+                                            }
+                                        }
+                                }
+                                checkingUpdate = false
+                            }
+                        },
+                    ) {
+                        if (checkingUpdate) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.height(16.dp).width(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text("Check now")
+                    }
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(
+                                        uk.hairyfred.libreshock.ui.UpdateChecker.RELEASES_PAGE_URL))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }) { Text("Open Releases") }
+                }
+                if (updateNeedsAppSettings) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    android.net.Uri.fromParts("package", context.packageName, null),
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }) { Text("Open app info") }
+                }
+            }
+        }
         SettingRow(
             label = "Confetti on alarm dismiss",
             description = "Tiny celebration when an alarm is stopped (not snoozed). Off by default.",
@@ -1137,6 +1310,7 @@ private fun ActionButtons(
     onHandRaise: () -> Unit,
     onButtons: () -> Unit,
     onTns: () -> Unit,
+    onSleepHistory: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     var vibeIntensity by remember { mutableStateOf(50f) }
@@ -1179,6 +1353,9 @@ private fun ActionButtons(
         }
         FilledTonalButton(onClick = onTns, modifier = Modifier.fillMaxWidth()) {
             Text("Timer & Stopwatch")
+        }
+        FilledTonalButton(onClick = onSleepHistory, modifier = Modifier.fillMaxWidth()) {
+            Text("Sleep history")
         }
         FilledTonalButton(onClick = onButtons, modifier = Modifier.fillMaxWidth()) {
             Text("Configure device buttons")
