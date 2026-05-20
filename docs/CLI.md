@@ -205,19 +205,19 @@ Flags:
 
 ## Sleep tracking
 
-The watch can stream actigraphy data (raw accelerometer-derived motion
-samples) which the vendor app post-processes into Awake/REM/Light/Deep
-sleep stages. Time-range scheduling (e.g. "track only between midnight
-and 5 AM") is entirely phone-side — the BLE command is just on / off.
+The watch logs sleep data when tracking is on. Its on-board classifier
+emits three stages (Awake / Sleep / Deep) — the vendor app applies a
+proprietary post-classifier on top to derive the fourth (Light vs REM).
+Time-range scheduling (e.g. "track only between midnight and 5 AM") is
+entirely phone-side — the BLE command is just on / off.
 
 ```
-python libreshock.py sleep --on    # start streaming sleep data
-python libreshock.py sleep --off   # stop streaming
+python libreshock.py sleep --on    # start tracking
+python libreshock.py sleep --off   # stop tracking
 ```
 
-This project doesn't yet parse the raw stream into sleep stages — that's
-a separate signal-processing job. The watch itself only knows "track" or
-"don't track"; the staging happens in software downstream.
+To pull and decode the stored sessions afterwards, see [Sleep history](#sleep-history)
+below.
 
 **Heads up:** the vendor app stores its sleep-tracking time range locally
 on the phone, not on the watch. If you toggle via libreshock the watch

@@ -34,8 +34,9 @@ Two interfaces:
   (bedtime, wake-up, Awake/Sleep/Deep totals). The watch only records
   3 stages; an optional setting (default off) applies an approximate
   Light/REM split phone-side, labelled with `≈` to show it isn't byte-
-  exact to the vendor's proprietary algorithm. Raw bytes can still be
-  exported for offline analysis.
+  exact to the vendor's proprietary algorithm. Android adds a per-night
+  detail screen with a multi-coloured line-graph sleep chart and a
+  Save raw bytes button (system file picker) for offline analysis.
 - Stop or snooze a currently-firing alarm from the phone / desktop
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity
@@ -51,6 +52,11 @@ Two interfaces:
   alarm CRUD UI with Material 3 TimePicker, in-app alarm-fire dialog
   plus a system notification with Stop / Snooze actions (works while the
   app is in the background — see *Limitations* below)
+- *(Android only)* Opt-in **update check** — Settings → "Check for
+  updates automatically" pings the GitHub Releases API once a day and
+  shows a snackbar with a link to the Releases page when a new tag is
+  available. Off by default; turning it on deep-links to system app
+  info so you can confirm LibreShock is allowed to use the network.
 
 ## Status
 
@@ -109,7 +115,11 @@ build, and install on a connected phone with USB debugging on. Min SDK 26
 
 Permissions: `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` (API 31+); falls
 back to `ACCESS_FINE_LOCATION` on older Android. `POST_NOTIFICATIONS`
-(Android 13+) for the alarm-firing notification. All requested at runtime.
+(Android 13+) for the alarm-firing notification. `INTERNET` is declared
+but only used by the opt-in update checker — no data is sent to GitHub,
+just a GET on the public Releases API. `CAMERA` is requested by zxing
+the first time you trigger a QR-guarded alarm scan. All runtime-
+requested except `INTERNET` (normal permission, granted at install).
 
 ### Limitations
 
@@ -128,13 +138,13 @@ From the command line, with Android Studio's bundled JDK on `JAVA_HOME`:
 ```
 cd android
 ./gradlew :app:installDebug
-./gradlew :app:testDebugUnitTest --tests \
-  "uk.hairyfred.libreshock.ble.AlarmProtocolTest"
+./gradlew :app:testDebugUnitTest
 ```
 
-The unit test verifies the Kotlin protocol output byte-matches captured
-vendor-app packets — same validation as `scripts/verify_combos.py` for the
-Python implementation.
+The unit tests verify the Kotlin protocol output byte-matches captured
+vendor-app packets (alarms, timer/stopwatch, sleep-history decode) —
+same validation as `scripts/verify_combos.py` for the Python
+implementation.
 
 ## Repository layout
 

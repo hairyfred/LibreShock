@@ -1576,7 +1576,10 @@ ACTIONS:
     snooze    Snooze a currently-firing alarm
     battery   Show watch battery percentage
     info      Show device info (manufacturer, model, serial, fw/hw versions)
-    sleep     Enable/disable automatic sleep tracking (--on / --off)
+    sleep     Sleep tracking: --on / --off to toggle on the watch,
+              --list to enumerate stored sessions, --list --decode for
+              per-night Awake/Sleep/Deep totals, optional --estimate-rem
+              to approximate the Light/REM split.
     handraise Configure hand-raise detection (--on/--off, --hand, --wrist, --stim)
     button    Rebind one of the watch's hardware-button slots (--slot, --act)
     debug     Print a debug report (services, chars, descriptors, device info)
@@ -1625,6 +1628,8 @@ ALARM OPTIONS:
     --beep-count <n>        Beep count (default: 5)
     --interval <sec>        Seconds between stimuli (default: 15)
     --snooze/--no-snooze    Enable/disable snooze (default: on)
+
+Full per-command flag reference: docs/CLI.md
 """
     print(help_text)
 
