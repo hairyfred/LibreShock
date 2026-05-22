@@ -26,11 +26,14 @@ changes. Don't let docs and code drift.
 ---
 
 ## Target Device
-- **BLE Name Pattern**: anything starting with `Pavlok` (e.g., `Pavlok-3-XXXX`)
-  - Today's format is `Pavlok-<model>-<id>` where the number is the hardware
-    generation. Protocol was reverse-engineered against a Pavlok-3. Earlier
-    and later models likely share the same protocol but are untested. We
-    match the `Pavlok` prefix so future name formats still pick up.
+- **BLE Name Pattern**: two vendor naming schemes seen in the wild —
+  `Pavlok-<model>-<id>` (e.g. `Pavlok-3-XXXX`, the Pavlok 3) and a shorter
+  `Pav<model>-<id>` (e.g. `Pav4-8cbf`, the Pavlok 4). Both start with `Pav`
+  followed by either `lok` or the model digit. We match that shape (see
+  `is_device_name` in libreshock.py / `ShockDevice.isDeviceName` in Kotlin)
+  so new models pick up automatically without matching unrelated devices
+  that merely contain `Pav`. Protocol was reverse-engineered against a
+  Pavlok-3; other models likely share it but are untested.
 - **Manufacturer**: Behavioral Technology Group, Inc.
 - **Firmware (tested)**: 6.10.0
 - **Hardware (tested)**: 6.0.0

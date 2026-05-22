@@ -62,7 +62,8 @@ Two interfaces:
 
 Tested against:
 
-- **BLE Name Pattern**: `Pavlok-*` (e.g. `Pavlok-3-XXXX`)
+- **BLE Name Pattern**: `Pavlok-*` (e.g. `Pavlok-3-XXXX`) and the shorter
+  `Pav<model>-*` scheme (e.g. `Pav4-8cbf`) — both are matched
 - **Manufacturer**: Behavioral Technology Group, Inc.
 - **Model**: Pavlok-S (Pavlok 3)
 - **Hardware**: 6.0.0

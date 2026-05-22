@@ -553,10 +553,26 @@ def parse_sleep_sessions(raw: bytes) -> List[SleepSession]:
     return sessions
 
 
-# Device identification. Vendor uses "Pavlok-<model>-<id>" today but we match
-# anything starting with "Pavlok" so future name formats (other models or
-# rebrands) still work. Protocol verified on Pavlok-3; other models untested.
-DEVICE_NAME_PATTERN = "Pavlok"
+# Device identification. Vendor BLE advertisement names seen in the wild:
+#   "Pavlok-3-XXXX"  — Pavlok 3 (Device Info model reads "Pavlok-S")
+#   "Pav4-8cbf"      — Pavlok 4 (shorter "Pav<model>-<id>" scheme)
+# Both start with "Pav" followed by either "lok" or the model digit. We
+# match that shape so new models pick up automatically, without matching
+# unrelated devices that merely contain "Pav". Protocol verified on
+# Pavlok-3; other models likely share it but are untested.
+DEVICE_NAME_LABEL = "Pavlok devices"
+
+
+def is_device_name(name: Optional[str]) -> bool:
+    """True if [name] looks like a Pavlok-family BLE advertisement name
+    ("Pavlok-3-XXXX", "Pav4-8cbf", etc.)."""
+    if not name:
+        return False
+    low = name.lower()
+    if not low.startswith("pav"):
+        return False
+    rest = low[3:]
+    return rest.startswith("lok") or (len(rest) > 0 and rest[0].isdigit())
 
 # Characteristic UUIDs (Service 156e1000)
 CHAR_VIBE = "00001001-0000-1000-8000-00805f9b34fb"
@@ -872,9 +888,9 @@ class ShockDevice:
 
     async def find_device(self, timeout=10.0):
         """Scan for device"""
-        print(f"Scanning for {DEVICE_NAME_PATTERN}...")
+        print(f"Scanning for {DEVICE_NAME_LABEL}...")
         self.device = await BleakScanner.find_device_by_filter(
-            lambda d, adv: d.name and DEVICE_NAME_PATTERN in d.name,
+            lambda d, adv: is_device_name(d.name),
             timeout=timeout
         )
         if self.device:
@@ -1646,11 +1662,13 @@ def _redact_address(addr: Optional[str]) -> str:
 
 
 def _redact_name(name: Optional[str]) -> str:
-    """Strip the unique suffix from a `Pavlok-3-XXXX` style name."""
+    """Strip the unique suffix from a BLE name. Handles both schemes:
+    `Pavlok-3-XXXX` → `Pavlok-3-XXXX` and `Pav4-8cbf` → `Pav4-XXXX`.
+    The last hyphen-separated segment is the unique device id."""
     if not name:
         return "(unknown)"
     parts = name.split("-")
-    if len(parts) >= 3:
+    if len(parts) >= 2:
         return "-".join(parts[:-1]) + "-XXXX"
     return name
 

@@ -714,7 +714,7 @@ fun ConnectionFlow(
         if (!permissionsGranted) return
         foundDevices.clear()
         isScanning = true
-        status = "Scanning for Pavlok-3-*..."
+        status = "Scanning for Pavlok devices..."
         try {
             device.scan().takeWhile { isScanning }.collect { result ->
                 if (foundDevices.none { it.device.address == result.device.address }) {

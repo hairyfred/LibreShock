@@ -47,9 +47,21 @@ class ShockDevice(private val context: Context) {
 
     companion object {
         private const val TAG = "ShockDevice"
-        // Match anything starting with "Pavlok" so other models and any future
-        // name format are picked up. Protocol verified on Pavlok-3 only.
-        const val DEVICE_NAME_PATTERN = "Pavlok"
+
+        // Vendor BLE advertisement names seen in the wild:
+        //   "Pavlok-3-XXXX"  — Pavlok 3 (Device Info model reads "Pavlok-S")
+        //   "Pav4-8cbf"      — Pavlok 4 (shorter "Pav<model>-<id>" scheme)
+        // Both start with "Pav" followed by either "lok" or the model digit.
+        // [isDeviceName] matches that shape so new models pick up
+        // automatically without matching unrelated devices that merely
+        // contain "Pav". Protocol verified on Pavlok-3 only.
+        fun isDeviceName(name: String?): Boolean {
+            if (name == null) return false
+            val low = name.lowercase()
+            if (!low.startsWith("pav")) return false
+            val rest = low.substring(3)
+            return rest.startsWith("lok") || (rest.isNotEmpty() && rest[0].isDigit())
+        }
 
         // Action characteristics (service 156e1000)
         val CHAR_VIBE: UUID = UUID.fromString("00001001-0000-1000-8000-00805f9b34fb")
@@ -142,8 +154,7 @@ class ShockDevice(private val context: Context) {
             ?: throw IllegalStateException("Bluetooth not enabled or LE scanner unavailable")
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val name = result.device.name ?: return
-                if (DEVICE_NAME_PATTERN in name) trySend(result)
+                if (isDeviceName(result.device.name)) trySend(result)
             }
             override fun onScanFailed(errorCode: Int) {
                 Log.e(TAG, "Scan failed: $errorCode")
@@ -364,8 +375,10 @@ class ShockDevice(private val context: Context) {
 
     private fun redactName(name: String?): String {
         if (name == null) return "(unknown)"
+        // Drop the last hyphen-segment (the unique device id). Handles both
+        // "Pavlok-3-XXXX" -> "Pavlok-3-XXXX" and "Pav4-8cbf" -> "Pav4-XXXX".
         val parts = name.split("-")
-        return if (parts.size >= 3) parts.dropLast(1).joinToString("-") + "-XXXX" else name
+        return if (parts.size >= 2) parts.dropLast(1).joinToString("-") + "-XXXX" else name
     }
 
     private fun redactAddress(addr: String?): String {
