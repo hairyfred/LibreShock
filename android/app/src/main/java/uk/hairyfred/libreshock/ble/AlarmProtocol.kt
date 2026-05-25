@@ -285,7 +285,107 @@ fun parseNotifyEvent(data: ByteArray): NotifyEvent? {
 }
 
 /** Parse a list-alarms response into AlarmConfigs. Mirrors Python's list_alarms. */
-fun parseAlarms(raw: ByteArray): List<AlarmConfig> {
+fun parseAlarms(raw: ByteArray): List<AlarmConfig> =
+    parseAlarmDiagnostics(raw).map { it.config }
+
+/** One alarm parsed from the watch with the raw armed-state bytes
+ *  preserved. Used by the Validate flow to surface internal-consistency
+ *  bugs (e.g. an alarm with TM-byte-3 bit 0x80 set but AO = 0, which the
+ *  watch fires on despite our parser/UI saying it's disabled). */
+data class AlarmDiagnostic(
+    val config: AlarmConfig,
+    val tmFlagByte: Int,
+    val aoByte: Int,
+) {
+    val warnings: List<String> get() {
+        val out = mutableListOf<String>()
+        val tmArmed = (tmFlagByte and 0x80) != 0
+        val aoArmed = aoByte != 0
+        if (tmArmed && !aoArmed) {
+            out += "TM byte 3 says armed (0x80 set) but AO = 0. The watch " +
+                "will fire this alarm even though the app shows it as " +
+                "disabled. Toggle the alarm off and on again to re-encode."
+        } else if (aoArmed && !tmArmed) {
+            out += "AO byte says armed but TM byte 3 bit 0x80 is clear. " +
+                "The watch may not fire this alarm even though the app " +
+                "shows it as enabled. Toggle the alarm off and on again " +
+                "to re-encode."
+        }
+        return out
+    }
+}
+
+/** One issue found by the Validate flow, attached to a particular alarm
+ *  (1-based for display) or to the whole list (alarmIndex = 0). */
+data class AlarmValidationIssue(val alarmIndex: Int, val message: String)
+
+/** Combine internal-consistency warnings (raw armed-state bytes) with a
+ *  field-by-field diff against the app's expected state. Pass `expected =
+ *  null` to skip the diff and only return raw-byte warnings (useful when
+ *  the app has no prior alarm state to compare). */
+fun computeAlarmValidationIssues(
+    fresh: List<AlarmDiagnostic>,
+    expected: List<AlarmConfig>?,
+): List<AlarmValidationIssue> {
+    val out = mutableListOf<AlarmValidationIssue>()
+    fresh.forEachIndexed { i, d ->
+        for (w in d.warnings) out += AlarmValidationIssue(i + 1, w)
+    }
+    if (expected != null) {
+        if (fresh.size != expected.size) {
+            out += AlarmValidationIssue(
+                alarmIndex = 0,
+                message = "Alarm count mismatch: app shows ${expected.size}, " +
+                    "watch has ${fresh.size}.",
+            )
+        }
+        val n = minOf(fresh.size, expected.size)
+        for (i in 0 until n) {
+            val e = expected[i]
+            val w = fresh[i].config
+            if (e.enabled != w.enabled)
+                out += AlarmValidationIssue(i + 1,
+                    "enabled: app=${e.enabled} watch=${w.enabled}")
+            if (e.hour != w.hour || e.minute != w.minute)
+                out += AlarmValidationIssue(i + 1, String.format(
+                    "time: app=%02d:%02d watch=%02d:%02d",
+                    e.hour, e.minute, w.hour, w.minute))
+            if (e.weekdays != w.weekdays)
+                out += AlarmValidationIssue(i + 1, String.format(
+                    "weekdays: app=0x%02x watch=0x%02x", e.weekdays, w.weekdays))
+            if (e.snooze != w.snooze)
+                out += AlarmValidationIssue(i + 1,
+                    "snooze: app=${e.snooze} watch=${w.snooze}")
+            if (e.snoozeZap != w.snoozeZap)
+                out += AlarmValidationIssue(i + 1,
+                    "snoozeZap: app=${e.snoozeZap} watch=${w.snoozeZap}")
+            if (e.lightSleep != w.lightSleep)
+                out += AlarmValidationIssue(i + 1,
+                    "lightSleep: app=${e.lightSleep} watch=${w.lightSleep}")
+            if (e.escalating != w.escalating)
+                out += AlarmValidationIssue(i + 1,
+                    "escalating: app=${e.escalating} watch=${w.escalating}")
+            if (e.smartAlarm != w.smartAlarm)
+                out += AlarmValidationIssue(i + 1,
+                    "smartAlarm: app=${e.smartAlarm} watch=${w.smartAlarm}")
+            if (e.guarantor != w.guarantor)
+                out += AlarmValidationIssue(i + 1,
+                    "guarantor: app=${e.guarantor} watch=${w.guarantor}")
+            if (e.vibration.enabled != w.vibration.enabled)
+                out += AlarmValidationIssue(i + 1,
+                    "vibration: app=${e.vibration.enabled} watch=${w.vibration.enabled}")
+            if (e.beep.enabled != w.beep.enabled)
+                out += AlarmValidationIssue(i + 1,
+                    "beep: app=${e.beep.enabled} watch=${w.beep.enabled}")
+            if (e.zap.enabled != w.zap.enabled)
+                out += AlarmValidationIssue(i + 1,
+                    "zap: app=${e.zap.enabled} watch=${w.zap.enabled}")
+        }
+    }
+    return out
+}
+
+fun parseAlarmDiagnostics(raw: ByteArray): List<AlarmDiagnostic> {
     var pos = 0
     // Skip the AH/length/crc header if present
     if (raw.size >= 6 && raw[0].toInt().toChar() == 'A' && raw[1].toInt().toChar() == 'H') {
@@ -298,7 +398,7 @@ fun parseAlarms(raw: ByteArray): List<AlarmConfig> {
         pos = apPos + 4 + apLen
     }
 
-    val alarms = mutableListOf<AlarmConfig>()
+    val out = mutableListOf<AlarmDiagnostic>()
     while (pos + 4 <= raw.size) {
         if (raw[pos].toInt().toChar() != 'H' || raw[pos + 1].toInt().toChar() != 'A') {
             pos++
@@ -308,17 +408,21 @@ fun parseAlarms(raw: ByteArray): List<AlarmConfig> {
         val blockStart = pos + 4
         val blockEnd = blockStart + contentLen
         if (blockEnd > raw.size) break
-        parseAlarmBlock(raw, blockStart, blockEnd)?.let { alarms.add(it) }
+        parseAlarmBlockWithDiagnostics(raw, blockStart, blockEnd)?.let { out.add(it) }
         pos = blockEnd
     }
-    return alarms
+    return out
 }
 
-private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? {
+private fun parseAlarmBlockWithDiagnostics(
+    buf: ByteArray, start: Int, end: Int,
+): AlarmDiagnostic? {
     var name = "alarm"
     var hour = 0
     var minute = 0
     var dayMask = 0
+    var tmFlagByte = 0
+    var aoByte = 0
     var stimulusInterval = 15
     var snooze = true
     var enabled = true
@@ -349,7 +453,8 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
             "TM" -> if (len == 4) {
                 minute = bcdToInt(buf[valStart + 1].toInt() and 0xFF)
                 hour = bcdToInt(buf[valStart + 2].toInt() and 0xFF)
-                dayMask = buf[valStart + 3].toInt() and 0x7F
+                tmFlagByte = buf[valStart + 3].toInt() and 0xFF
+                dayMask = tmFlagByte and 0x7F
             }
             "WI" -> if (len == 2) stimulusInterval = u16LeAt(buf, valStart)
             "SN" -> if (len >= 1) {
@@ -358,7 +463,7 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
                 snoozeZap = (snByte and SN_FLAG_SNOOZE_ZAP) != 0
             }
             "AO" -> if (len >= 1) {
-                val aoByte = buf[valStart].toInt() and 0xFF
+                aoByte = buf[valStart].toInt() and 0xFF
                 enabled = aoByte != 0
                 lightSleep = (aoByte and AO_FLAG_LIGHT_SLEEP) != 0
                 escalating = (aoByte and AO_FLAG_ESCALATING) != 0
@@ -393,7 +498,7 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
         p = valEnd
     }
 
-    return AlarmConfig(
+    val config = AlarmConfig(
         hour = hour, minute = minute, name = name,
         weekdays = dayMask, snooze = snooze, enabled = enabled,
         stimulusInterval = stimulusInterval,
@@ -410,6 +515,7 @@ private fun parseAlarmBlock(buf: ByteArray, start: Int, end: Int): AlarmConfig? 
         escalating = escalating,
         smartAlarm = smartAlarm,
     )
+    return AlarmDiagnostic(config = config, tmFlagByte = tmFlagByte, aoByte = aoByte)
 }
 
 private fun u16LeAt(buf: ByteArray, offset: Int): Int =

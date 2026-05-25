@@ -485,4 +485,83 @@ class AlarmProtocolTest {
         }
         return -1
     }
+
+    // ---- Validate flow ----
+
+    /** A clean disabled alarm round-trip should produce no warnings: TM=0x3e,
+     *  AO=0x00 — both agree the alarm is disabled. */
+    @Test
+    fun diagnosticOnCleanDisabledAlarmHasNoWarnings() {
+        val cfg = AlarmConfig(
+            hour = 7, minute = 30, name = "alarm", weekdays = 0x3E,
+            enabled = false, snooze = true, stimulusInterval = 15,
+            vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+            beep = AlarmAction(enabled = false), zap = AlarmAction(enabled = false),
+        )
+        val pkt = buildAlarmPacket(listOf(cfg))
+        val diags = parseAlarmDiagnostics(pkt)
+        assertEquals(1, diags.size)
+        assertEquals(0x3E, diags[0].tmFlagByte)
+        assertEquals(0x00, diags[0].aoByte)
+        assertEquals(emptyList<String>(), diags[0].warnings)
+    }
+
+    /** The exact bug v0.1.11 fixed: AO=0 but TM bit 0x80 still set. The
+     *  diagnostic must call this out so the user sees the watch will still
+     *  fire an alarm they thought was disabled. */
+    @Test
+    fun diagnosticFlagsTmArmedButAoZero() {
+        val d = AlarmDiagnostic(
+            config = AlarmConfig(), tmFlagByte = 0xBE, aoByte = 0x00,
+        )
+        assertEquals(1, d.warnings.size)
+        assertEquals(true, d.warnings[0].contains("TM byte 3 says armed"))
+    }
+
+    /** Inverse direction — AO armed but TM bit clear. The watch may NOT fire
+     *  an alarm that the UI shows as enabled. */
+    @Test
+    fun diagnosticFlagsAoArmedButTmClear() {
+        val d = AlarmDiagnostic(
+            config = AlarmConfig(), tmFlagByte = 0x3E, aoByte = 0x01,
+        )
+        assertEquals(1, d.warnings.size)
+        assertEquals(true, d.warnings[0].contains("AO byte says armed"))
+    }
+
+    /** Field diff catches an enabled-mismatch between app state and the
+     *  watch's parsed state. */
+    @Test
+    fun fieldDiffCatchesEnabledMismatch() {
+        val expected = AlarmConfig(hour = 7, minute = 30, enabled = false)
+        // Simulate a watch read where the parser returned enabled=true.
+        val fresh = listOf(AlarmDiagnostic(
+            config = AlarmConfig(hour = 7, minute = 30, enabled = true),
+            tmFlagByte = 0xBE, aoByte = 0x01,
+        ))
+        val issues = computeAlarmValidationIssues(fresh, listOf(expected))
+        assertEquals(true, issues.any { it.message.contains("enabled") })
+    }
+
+    /** Validate with no expected state still surfaces raw-byte warnings. */
+    @Test
+    fun validationWithNoExpectedSurfacesRawByteWarningsOnly() {
+        val fresh = listOf(AlarmDiagnostic(
+            config = AlarmConfig(), tmFlagByte = 0xBE, aoByte = 0x00,
+        ))
+        val issues = computeAlarmValidationIssues(fresh, null)
+        assertEquals(1, issues.size)
+        assertEquals(1, issues[0].alarmIndex)
+    }
+
+    /** Count mismatch surfaces a list-level issue (alarmIndex = 0). */
+    @Test
+    fun validationFlagsCountMismatch() {
+        val expected = listOf(AlarmConfig(), AlarmConfig())
+        val fresh = listOf(AlarmDiagnostic(
+            config = AlarmConfig(), tmFlagByte = 0x80, aoByte = 0x01,
+        ))
+        val issues = computeAlarmValidationIssues(fresh, expected)
+        assertEquals(true, issues.any { it.alarmIndex == 0 && it.message.contains("count mismatch") })
+    }
 }

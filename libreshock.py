@@ -215,6 +215,152 @@ def build_tns_config(config: TnsConfig) -> bytes:
     return bytes([0x22]) + struct.pack('<H', len(body)) + body + bytes([0x00])
 
 
+@dataclass
+class AlarmDiagnostic:
+    """One alarm parsed from the watch with the raw armed-state bytes
+    preserved. Lets the Validate flow surface bugs where the parser/UI
+    say one thing but the watch's behaviour disagrees — most notably the
+    TM byte 3 armed bit being set while AO is 0 (a disabled alarm that
+    still fires; fixed in v0.1.11 but old data can still be in this state)."""
+    config: 'AlarmConfig'
+    tm_flag_byte: int   # TM byte 3: high bit (0x80) = armed, low 7 = day mask
+    ao_byte: int        # AO byte: 0 = disabled, otherwise armed + flag bits
+
+    @property
+    def warnings(self) -> List[str]:
+        """Human-readable list of internal-consistency problems."""
+        out: List[str] = []
+        tm_armed = (self.tm_flag_byte & 0x80) != 0
+        ao_armed = self.ao_byte != 0
+        if tm_armed and not ao_armed:
+            out.append(
+                "TM byte 3 says armed (0x80 set) but AO = 0. The watch will "
+                "fire this alarm even though the app shows it as disabled. "
+                "Toggle the alarm off and on again to force a re-encode."
+            )
+        elif ao_armed and not tm_armed:
+            out.append(
+                "AO byte says armed but TM byte 3 bit 0x80 is clear. The "
+                "watch may not fire this alarm even though the app shows "
+                "it as enabled. Toggle the alarm off and on again to "
+                "force a re-encode."
+            )
+        if (self.tm_flag_byte & 0x7F) > 0x7F:
+            out.append(f"Day mask 0x{self.tm_flag_byte & 0x7F:02x} has bits "
+                       "outside the Sun-Sat range (0x7F).")
+        return out
+
+
+def parse_alarm_diagnostics(data: bytes) -> List[AlarmDiagnostic]:
+    """Parse the raw response bytes from a `0x06 + profile` alarm query
+    into one [AlarmDiagnostic] per alarm. Internal-consistency checks
+    on the watch's raw armed-state bytes (TM byte 3 vs AO byte) are
+    exposed via [AlarmDiagnostic.warnings] for the Validate flow."""
+    # Skip 6-byte AH header if present (AH + length + checksum).
+    if data[:2] == b'AH' and len(data) > 6:
+        data = data[6:]
+    # Skip past the AP profile so we don't accidentally land on "HA" bytes
+    # inside the profile content.
+    ap_pos = data.find(b'AP')
+    scan_start = 0
+    if ap_pos >= 0 and ap_pos + 4 <= len(data):
+        ap_len = data[ap_pos + 2] | (data[ap_pos + 3] << 8)
+        scan_start = ap_pos + 4 + ap_len
+
+    out: List[AlarmDiagnostic] = []
+    pos = scan_start
+    while pos + 4 <= len(data):
+        if data[pos:pos+2] != b'HA':
+            pos += 1
+            continue
+        content_len = data[pos + 2] | (data[pos + 3] << 8)
+        block_start = pos + 4
+        block_end = block_start + content_len
+        if block_end > len(data):
+            break
+        block = data[block_start:block_end]
+        pos = block_end
+
+        config = AlarmConfig()
+        tm_flag_byte = 0
+        ao_byte = 0
+
+        # AN (Alarm Name)
+        an_pos = block.find(b'AN')
+        if an_pos >= 0 and an_pos + 4 <= len(block):
+            an_len = block[an_pos + 2] | (block[an_pos + 3] << 8)
+            if an_pos + 4 + an_len <= len(block):
+                config.name = block[an_pos + 4:an_pos + 4 + an_len].decode('utf-8', errors='ignore')
+
+        # TM (Time). Layout: T M [len:2] [00, min_bcd, hour_bcd, flag|day_mask]
+        tm_pos = block.find(b'TM')
+        if tm_pos >= 0 and tm_pos + 8 <= len(block):
+            config.minute = _bcd_to_int(block[tm_pos + 5])
+            config.hour = _bcd_to_int(block[tm_pos + 6])
+            tm_flag_byte = block[tm_pos + 7]
+            config.weekdays = tm_flag_byte & 0x7F
+
+        # WI (Stimulus Interval)
+        wi_pos = block.find(b'WI')
+        if wi_pos >= 0 and wi_pos + 6 <= len(block):
+            config.stimulus_interval = block[wi_pos + 4] | (block[wi_pos + 5] << 8)
+
+        # SN (Snooze + Snooze Zap). 2-bit field.
+        sn_pos = block.find(b'SN')
+        if sn_pos >= 0 and sn_pos + 5 <= len(block):
+            sn_byte = block[sn_pos + 4]
+            config.snooze = (sn_byte & 0x01) != 0
+            config.snooze_zap = (sn_byte & SN_FLAG_SNOOZE_ZAP) != 0
+
+        # AO (Alarm On/Enabled + Guarantor task + feature flags).
+        ao_pos = block.find(b'AO')
+        if ao_pos >= 0 and ao_pos + 5 <= len(block):
+            ao_byte = block[ao_pos + 4]
+            config.enabled = ao_byte != 0
+            config.light_sleep = (ao_byte & AO_FLAG_LIGHT_SLEEP) != 0
+            config.escalating = (ao_byte & AO_FLAG_ESCALATING) != 0
+            config.smart_alarm = (ao_byte & AO_FLAG_SMART_ALARM) != 0
+            guarantor_bits = ao_byte & ~(
+                AO_FLAG_LIGHT_SLEEP | AO_FLAG_ESCALATING | AO_FLAG_SMART_ALARM
+            )
+            config.guarantor = guarantor_bits if guarantor_bits != 0 else Guarantor.NONE
+
+        # JL (Jumping-Jacks count) — only present when guarantor=JJ.
+        jl_pos = block.find(b'JL')
+        if jl_pos >= 0 and jl_pos + 5 <= len(block):
+            config.jumping_jacks_count = block[jl_pos + 4]
+
+        # Each stim block is omitted entirely when the stim is disabled.
+        config.vibration = AlarmAction(enabled=False)
+        config.beep = AlarmAction(enabled=False)
+        config.zap = AlarmAction(enabled=False)
+
+        mc_pos = block.find(b'MC')
+        if mc_pos >= 0 and mc_pos + 7 <= len(block):
+            config.vibration = AlarmAction(
+                enabled=True, count=block[mc_pos + 5], intensity=block[mc_pos + 6],
+            )
+        pc_pos = block.find(b'PC')
+        if pc_pos >= 0 and pc_pos + 7 <= len(block):
+            config.beep = AlarmAction(
+                enabled=True, count=block[pc_pos + 5], intensity=block[pc_pos + 6],
+            )
+        zc_pos = block.find(b'ZC')
+        if zc_pos >= 0 and zc_pos + 6 <= len(block):
+            zc_flags = block[zc_pos + 4]
+            zc_count = zc_flags & 0x0F
+            config.zap = AlarmAction(
+                enabled=True,
+                count=zc_count if zc_count > 0 else 1,
+                intensity=block[zc_pos + 5],
+            )
+
+        out.append(AlarmDiagnostic(
+            config=config, tm_flag_byte=tm_flag_byte, ao_byte=ao_byte,
+        ))
+    return out
+
+
 # Sleep tracking history. The watch stores past sleep sessions in flash; the
 # phone fetches them on demand via a request/response protocol on char 2002
 # (the "events" char in service 156e2000). Two query types observed:
@@ -1394,125 +1540,33 @@ class ShockDevice:
 
         if not received:
             return []
+        diagnostics = parse_alarm_diagnostics(b''.join(received))
+        return [d.config for d in diagnostics]
 
-        # Combine all received data
-        data = b''.join(received)
+    async def validate_alarms(self) -> List['AlarmDiagnostic']:
+        """Re-read alarms from the watch and return raw diagnostic info per
+        alarm — including the TM byte 3 flag byte and AO byte. Lets callers
+        check for internal-consistency bugs like the watch having a
+        TM-armed alarm with AO=0 (i.e. the encoder said "disabled" via AO
+        but left the TM armed bit set, so the watch fires anyway)."""
+        received = []
 
-        # Skip 6-byte header if present (AH + length + checksum)
-        if data[:2] == b'AH' and len(data) > 6:
-            data = data[6:]
+        def on_notify(sender, data):
+            received.append(data)
 
-        # Parse alarms from response. Each alarm block is HA + len(2 LE) + content.
-        # The third byte (commonly printable as 'C', 'P', '9', '6', 'F') is just
-        # the low byte of the 2-byte content length and varies by stim combo.
-        # Skip past the AP profile header first so we don't accidentally land on
-        # "HA" inside the profile bytes.
-        ap_pos = data.find(b'AP')
-        scan_start = 0
-        if ap_pos >= 0 and ap_pos + 4 <= len(data):
-            ap_len = data[ap_pos + 2] | (data[ap_pos + 3] << 8)
-            scan_start = ap_pos + 4 + ap_len
-
-        alarms = []
-        pos = scan_start
-        while pos + 4 <= len(data):
-            if data[pos:pos+2] != b'HA':
-                pos += 1
-                continue
-            content_len = data[pos + 2] | (data[pos + 3] << 8)
-            block_start = pos + 4
-            block_end = block_start + content_len
-            if block_end > len(data):
-                break
-            block = data[block_start:block_end]
-            pos = block_end
-
-            config = AlarmConfig()
-
-            # Parse AN (Alarm Name)
-            an_pos = block.find(b'AN')
-            if an_pos >= 0 and an_pos + 4 <= len(block):
-                an_len = block[an_pos + 2] | (block[an_pos + 3] << 8)
-                if an_pos + 4 + an_len <= len(block):
-                    config.name = block[an_pos + 4:an_pos + 4 + an_len].decode('utf-8', errors='ignore')
-
-            # Parse TM (Time). Layout: T M [len:2] [00, min_bcd, hour_bcd, 0x80|day_mask]
-            tm_pos = block.find(b'TM')
-            if tm_pos >= 0 and tm_pos + 8 <= len(block):
-                minute_bcd = block[tm_pos + 5]
-                hour_bcd = block[tm_pos + 6]
-                config.minute = _bcd_to_int(minute_bcd)
-                config.hour = _bcd_to_int(hour_bcd)
-                # Day mask is the low 7 bits of TM byte 3 (0x80 is the armed flag).
-                config.weekdays = block[tm_pos + 7] & 0x7F
-
-            # Parse WI (Stimulus Interval)
-            wi_pos = block.find(b'WI')
-            if wi_pos >= 0 and wi_pos + 6 <= len(block):
-                config.stimulus_interval = block[wi_pos + 4] | (block[wi_pos + 5] << 8)
-
-            # Parse SN (Snooze + Snooze Zap). 2-bit field.
-            sn_pos = block.find(b'SN')
-            if sn_pos >= 0 and sn_pos + 5 <= len(block):
-                sn_byte = block[sn_pos + 4]
-                config.snooze = (sn_byte & 0x01) != 0
-                config.snooze_zap = (sn_byte & SN_FLAG_SNOOZE_ZAP) != 0
-
-            # Parse AO (Alarm On/Enabled + Guarantor task + feature flags).
-            # Mask off the additional-feature bits before resolving the
-            # guarantor, since those bits live in the same byte.
-            ao_pos = block.find(b'AO')
-            if ao_pos >= 0 and ao_pos + 5 <= len(block):
-                ao_byte = block[ao_pos + 4]
-                config.enabled = ao_byte != 0
-                config.light_sleep = (ao_byte & AO_FLAG_LIGHT_SLEEP) != 0
-                config.escalating = (ao_byte & AO_FLAG_ESCALATING) != 0
-                config.smart_alarm = (ao_byte & AO_FLAG_SMART_ALARM) != 0
-                guarantor_bits = ao_byte & ~(
-                    AO_FLAG_LIGHT_SLEEP | AO_FLAG_ESCALATING | AO_FLAG_SMART_ALARM
-                )
-                config.guarantor = guarantor_bits if guarantor_bits != 0 else Guarantor.NONE
-
-            # Parse JL (Jumping-Jacks count) — only present when guarantor=JJ.
-            jl_pos = block.find(b'JL')
-            if jl_pos >= 0 and jl_pos + 5 <= len(block):
-                config.jumping_jacks_count = block[jl_pos + 4]
-
-            # Each stim block is omitted entirely when the stim is disabled.
-            # Default to disabled, then enable if its block is present.
-            config.vibration = AlarmAction(enabled=False)
-            config.beep = AlarmAction(enabled=False)
-            config.zap = AlarmAction(enabled=False)
-
-            mc_pos = block.find(b'MC')
-            if mc_pos >= 0 and mc_pos + 7 <= len(block):
-                config.vibration = AlarmAction(
-                    enabled=True,
-                    count=block[mc_pos + 5],
-                    intensity=block[mc_pos + 6],
-                )
-
-            pc_pos = block.find(b'PC')
-            if pc_pos >= 0 and pc_pos + 7 <= len(block):
-                config.beep = AlarmAction(
-                    enabled=True,
-                    count=block[pc_pos + 5],
-                    intensity=block[pc_pos + 6],
-                )
-
-            zc_pos = block.find(b'ZC')
-            if zc_pos >= 0 and zc_pos + 6 <= len(block):
-                zc_flags = block[zc_pos + 4]
-                zc_count = zc_flags & 0x0F
-                config.zap = AlarmAction(
-                    enabled=True,
-                    count=zc_count if zc_count > 0 else 1,
-                    intensity=block[zc_pos + 5],
-                )
-
-            alarms.append(config)
-
-        return alarms
+        await self.client.start_notify(CHAR_DATA, on_notify)
+        await self.client.start_notify(CHAR_CTRL, on_notify)
+        await asyncio.sleep(0.3)
+        try:
+            cmd = bytes([0x06, 0x00]) + DEFAULT_PROFILE
+            await self.client.write_gatt_char(CHAR_CTRL, cmd, response=True)
+            await asyncio.sleep(2.0)
+        finally:
+            await self.client.stop_notify(CHAR_DATA)
+            await self.client.stop_notify(CHAR_CTRL)
+        if not received:
+            return []
+        return parse_alarm_diagnostics(b''.join(received))
 
 
 def _parse_weekdays(days_str: str) -> int:
@@ -1780,6 +1834,11 @@ async def main():
                         help="Alarm time HH:MM (can use multiple times)")
     parser.add_argument("--add", type=str, action="append",
                         help="Add alarm to existing ones HH:MM")
+    parser.add_argument("--validate", action="store_true",
+                        help="With 'alarm': re-read alarms from the watch and check the "
+                             "raw armed-state bytes for internal-consistency bugs "
+                             "(e.g. an alarm that looks disabled but the watch will "
+                             "still fire). Reports any inconsistencies found.")
     parser.add_argument("-l", "--list", action="store_true",
                         help="List current alarms")
     parser.add_argument("--clear", action="store_true",
@@ -2035,7 +2094,31 @@ async def main():
                 for key, value in info.items():
                     print(f"  {key.replace('_', ' ').title():20s} {value}")
         elif args.action == "alarm":
-            if args.list:
+            if args.validate:
+                diags = await device.validate_alarms()
+                if not diags:
+                    print("No alarms set.")
+                else:
+                    issues = 0
+                    print(f"\nValidating {len(diags)} alarm(s) on the watch:\n")
+                    for i, d in enumerate(diags, 1):
+                        cfg = d.config
+                        days_str = ",".join(cfg.weekday_names()) or "(no repeat)"
+                        state = "ENABLED" if cfg.enabled else "disabled"
+                        print(f"  #{i}  {cfg.hour:02d}:{cfg.minute:02d}  "
+                              f"{cfg.name!r:20s} {days_str:30s} {state}")
+                        print(f"        raw: TM-byte-3=0x{d.tm_flag_byte:02x}  "
+                              f"AO=0x{d.ao_byte:02x}")
+                        for w in d.warnings:
+                            issues += 1
+                            print(f"        ⚠ {w}")
+                    print()
+                    if issues == 0:
+                        print(f"OK — all {len(diags)} alarms are internally consistent.")
+                    else:
+                        print(f"Found {issues} issue(s) across {len(diags)} alarm(s).")
+
+            elif args.list:
                 alarms = await device.list_alarms()
                 if alarms:
                     print("\nCurrent Alarms:")

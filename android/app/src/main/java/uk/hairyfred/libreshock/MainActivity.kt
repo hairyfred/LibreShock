@@ -408,6 +408,24 @@ fun AppRoot() {
                     batteryPercent = null
                     nextAlarmLabel = null
                 }
+                is ConnectionState.Unsupported -> {
+                    batteryPercent = null
+                    nextAlarmLabel = null
+                    // Pavlok-4 / Shock Clock Max (or anything else that
+                    // doesn't expose the Pavlok-3 Action Settings service).
+                    // Connect succeeded at the BLE layer but nothing else
+                    // will work — surface that clearly so the user doesn't
+                    // think the app is broken.
+                    val model = state.model?.takeIf { it.isNotBlank() }
+                        ?: "this device"
+                    snackbarHostState.showSnackbar(
+                        message = "Connected to $model, but its BLE protocol " +
+                            "isn't supported yet (Pavlok 4 / Shock Clock Max " +
+                            "uses a different protocol). See the project " +
+                            "README for details.",
+                        duration = SnackbarDuration.Long,
+                    )
+                }
                 else -> {}
             }
         }
@@ -509,6 +527,9 @@ fun AppRoot() {
                         try { device.setAlarms(emptyList()) } catch (_: Exception) {}
                         refreshAlarms()
                     }
+                },
+                onValidate = {
+                    try { device.validateAlarms() } catch (_: Exception) { null }
                 },
             )
             "alarm_edit" -> AlarmEditScreen(

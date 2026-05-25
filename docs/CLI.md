@@ -70,6 +70,12 @@ python libreshock.py alarm --add 8:00 --days weekdays
 # Enable / disable an alarm without deleting it (1-based index from --list)
 python libreshock.py alarm --disable 2
 python libreshock.py alarm --enable 2
+
+# Sanity-check: re-read alarms and flag any internal-consistency bugs
+# (e.g. a disabled alarm whose TM-byte-3 armed bit was left set, which
+# would cause the watch to fire it anyway). Mirrors the Android app's
+# Alarms screen → Validate button.
+python libreshock.py alarm --validate
 ```
 
 Alarm flags:

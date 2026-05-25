@@ -38,6 +38,12 @@ Two interfaces:
   detail screen with a multi-coloured line-graph sleep chart and a
   Save raw bytes button (system file picker) for offline analysis.
 - Stop or snooze a currently-firing alarm from the phone / desktop
+- Validate the alarms on the watch — re-reads them and checks the raw
+  armed-state bytes for internal-consistency bugs (e.g. an alarm that
+  looks disabled but would still fire), plus diffs each field against
+  what the app shows. Surfaces silent bugs immediately rather than at
+  the next alarm time. Available as the Alarms-screen Validate button
+  in Android and `python libreshock.py alarm --validate` in the CLI.
 - Configure hand-raise detection: enable, wrist hand/position, stimulus
   (vibrate / beep / zap / countdown), zap intensity
 - Rebind the watch's 3 hardware buttons: short + long press for each can
@@ -70,6 +76,28 @@ Tested against:
 - **Firmware**: 6.10.0
 
 Other Pavlok models likely share the same protocol but are untested. (I do not own any other Pavlok device, if there are issues please create an issue with logs and I will try my best to support it)
+
+### Pavlok 4 / Shock Clock Max — currently unsupported
+
+A user-supplied debug scan of a **Pavlok 4** (marketed as the
+**Shock Clock Max**; BLE name `Pav4-XXXX`, manufacturer "Pavlok Inc.",
+firmware `1.4.35.999`) confirmed that it ships with an **entirely
+different BLE service layout** from the Pavlok 3:
+
+- Pavlok 3: vendor services `156e1000`, `156e2000`, `156e5000`, `156e7000`
+  with documented characteristics for vibe / beep / zap / alarm / etc.
+- Pavlok 4: a single command-channel service `66651000-39f4-11ed-92bd-832abac11ab4`
+  (two characteristics, write-no-resp + notify) plus an auth/identity
+  service `66657000-39f4-11ed-...`. None of the Pavlok-3 characteristics
+  exist.
+
+LibreShock detects this at connect time and shows an *"Unsupported device"*
+status rather than silently failing every operation. Adding Pavlok-4
+support is a separate reverse-engineering effort comparable in scope to
+the original Pavlok-3 work — captures from a Pavlok 4 user willing to
+follow [docs/btsnoop-capture.md](docs/btsnoop-capture.md) would be the
+biggest unblock. Track / contribute on the
+[Pavlok 4 support issue](https://github.com/hairyfred/LibreShock/issues).
 
 If your watch doesn't work with LibreShock, please export a debug log and attach it to a [GitHub issue](https://github.com/hairyfred/Libreshock/issues):
 

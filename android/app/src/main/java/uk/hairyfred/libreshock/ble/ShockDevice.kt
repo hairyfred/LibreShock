@@ -63,6 +63,14 @@ class ShockDevice(private val context: Context) {
             return rest.startsWith("lok") || (rest.isNotEmpty() && rest[0].isDigit())
         }
 
+        // The Pavlok-3 "Action Settings" service. Used as a feature-probe at
+        // connect time: if a device exposes this service, we know it speaks
+        // the protocol LibreShock implements. Pavlok-4 ships with a different
+        // service scheme (66651000-39f4-11ed-..., etc.) and won't accept any
+        // of our writes — we detect that case and surface a clear error
+        // instead of silently failing on the first read.
+        val SERVICE_ACTIONS: UUID = UUID.fromString("156e1000-a300-4fea-897b-86f698d74461")
+
         // Action characteristics (service 156e1000)
         val CHAR_VIBE: UUID = UUID.fromString("00001001-0000-1000-8000-00805f9b34fb")
         val CHAR_BEEP: UUID = UUID.fromString("00001002-0000-1000-8000-00805f9b34fb")
@@ -176,6 +184,19 @@ class ShockDevice(private val context: Context) {
         }
         if (!ok) {
             _connectionState.value = ConnectionState.Disconnected
+            return false
+        }
+        // Pavlok-3 protocol probe: the Action Settings service must exist.
+        // Pavlok-4 (and possibly other future models) use a different service
+        // UUID scheme and would silently fail every subsequent operation —
+        // surface that as Unsupported so the UI can show a clear message.
+        val g = gatt
+        if (g != null && g.getService(SERVICE_ACTIONS) == null) {
+            val modelName = runCatching {
+                readChar(CHAR_MODEL)?.toString(Charsets.UTF_8)
+            }.getOrNull()
+            _connectionState.value = ConnectionState.Unsupported(modelName)
+            g.disconnect()
             return false
         }
         val notifyOk = setupNotifications()
@@ -544,6 +565,28 @@ class ShockDevice(private val context: Context) {
         parseAlarms(buffer.toByteArray())  // may legitimately return empty list
     }
 
+    /** Like [listAlarms] but returns the raw armed-state diagnostic per
+     *  alarm, so the Validate UI can flag internal-consistency bugs
+     *  (e.g. an alarm with TM-byte-3 bit 0x80 set but AO = 0 — the watch
+     *  will fire it despite the parser/UI saying it's disabled). */
+    suspend fun validateAlarms(
+        profile: ByteArray = "Single 1".toByteArray(Charsets.UTF_8),
+    ): List<AlarmDiagnostic>? = gattMutex.withLock {
+        drain(ctrlNotifs)
+        drain(dataNotifs)
+        if (!writeChar(CHAR_CTRL, CtrlCommand.queryAlarms(profile))) return@withLock null
+        val buffer = ArrayList<Byte>(512)
+        var firstChunk = true
+        while (true) {
+            val timeout = if (firstChunk) 3000L else 500L
+            val chunk = withTimeoutOrNull(timeout) { ctrlNotifs.receive() } ?: break
+            for (b in chunk) buffer.add(b)
+            firstChunk = false
+        }
+        if (buffer.isEmpty()) return@withLock null
+        parseAlarmDiagnostics(buffer.toByteArray())
+    }
+
     suspend fun stopAlarm(): Boolean = gattMutex.withLock {
         writeChar(CHAR_CTRL, CtrlCommand.STOP_ALARM)
     }
@@ -718,6 +761,12 @@ sealed class ConnectionState {
     object Connected : ConnectionState()
     /** Connection dropped without a call to [ShockDevice.disconnect] — candidate for auto-reconnect. */
     object Lost : ConnectionState()
+    /** Connect succeeded at the BLE layer but the device doesn't expose the
+     *  Pavlok-3 protocol services — likely a Pavlok-4 or similar generation
+     *  using a totally different service UUID scheme. The watch is reachable
+     *  but LibreShock has nothing to say to it. [model] is whatever the
+     *  Device Info service reports, if anything. */
+    data class Unsupported(val model: String?) : ConnectionState()
 }
 
 /** One of the 6 hardware-button slots (3 buttons x 2 press modes). */

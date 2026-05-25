@@ -54,9 +54,12 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import uk.hairyfred.libreshock.ble.AlarmAction
 import uk.hairyfred.libreshock.ble.AlarmConfig
+import uk.hairyfred.libreshock.ble.AlarmDiagnostic
+import uk.hairyfred.libreshock.ble.AlarmValidationIssue
 import uk.hairyfred.libreshock.ble.Guarantor
 import uk.hairyfred.libreshock.ble.ShockDevice
 import uk.hairyfred.libreshock.ble.Weekday
+import uk.hairyfred.libreshock.ble.computeAlarmValidationIssues
 
 private val DAY_LABELS = listOf("S", "M", "T", "W", "T", "F", "S")
 private val DAY_BITS = listOf(
@@ -72,6 +75,7 @@ fun AlarmsScreen(
     onEdit: (alarm: AlarmConfig?, index: Int?) -> Unit,
     onToggleEnabled: (index: Int, enabled: Boolean) -> Unit,
     onClearAll: () -> Unit,
+    onValidate: suspend () -> List<AlarmDiagnostic>?,
 ) {
     // alarms == null means "not loaded yet" (or read failed). Empty list means
     // we have a confirmed empty state. Trigger an initial refresh if we don't
@@ -86,6 +90,11 @@ fun AlarmsScreen(
     }
 
     var showClearDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var validating by remember { mutableStateOf(false) }
+    var validationResult by remember {
+        mutableStateOf<Pair<Int, List<AlarmValidationIssue>>?>(null)
+    }
 
     Column(
         modifier = Modifier
@@ -99,7 +108,24 @@ fun AlarmsScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Button(onClick = { onEdit(null, null) }) { Text("+ Add alarm") }
-            OutlinedButton(onClick = onRefresh) { Text("Refresh") }
+            OutlinedButton(onClick = onRefresh, enabled = !validating) { Text("Refresh") }
+            OutlinedButton(
+                enabled = !validating,
+                onClick = {
+                    scope.launch {
+                        validating = true
+                        val fresh = try { onValidate() } catch (_: Exception) { null }
+                        if (fresh == null) {
+                            validationResult = -1 to listOf(AlarmValidationIssue(
+                                0, "Couldn't read alarms from the watch."))
+                        } else {
+                            val issues = computeAlarmValidationIssues(fresh, alarms)
+                            validationResult = fresh.size to issues
+                        }
+                        validating = false
+                    }
+                },
+            ) { Text(if (validating) "Validating…" else "Validate") }
         }
         statusText?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
@@ -125,6 +151,48 @@ fun AlarmsScreen(
                 ),
             ) { Text("Clear all alarms") }
         }
+    }
+
+    validationResult?.let { (count, issues) ->
+        AlertDialog(
+            onDismissRequest = { validationResult = null },
+            title = { Text(if (issues.isEmpty()) "Alarms validated" else "Validation issues found") },
+            text = {
+                Column {
+                    if (count >= 0) {
+                        Text(
+                            "Re-read $count alarm(s) from the watch and checked " +
+                                "the raw armed-state bytes for internal consistency, " +
+                                "plus each field against what the app shows.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (issues.isEmpty()) {
+                        Text("Everything matches — no issues found.",
+                            style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        Text("${issues.size} issue(s):",
+                            style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(4.dp))
+                        Column(
+                            modifier = Modifier.verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            issues.forEach { i ->
+                                val prefix = if (i.alarmIndex == 0) "•"
+                                             else "• Alarm ${i.alarmIndex}:"
+                                Text("$prefix ${i.message}",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { validationResult = null }) { Text("OK") }
+            },
+        )
     }
 
     if (showClearDialog) {
