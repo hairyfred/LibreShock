@@ -328,7 +328,11 @@ Wednesday-only (0x88), Monday-only (0x82), and Saturday-only (0xC0) alarms.
 | 0x41 | Weekends (Sat-Sun) |
 
 For an armed alarm, TM byte 3 = `0x80 | mask`. For a one-time alarm with no
-repeat, TM byte 3 = `0x80` (no day bits set).
+repeat, TM byte 3 = `0x80` (no day bits set). **For a disabled alarm clear
+bit 0x80** — the watch fires based on this bit, not the AO byte, so leaving
+0x80 set makes the alarm trigger even when AO = 0. (Bug fixed v0.1.11; both
+encoders now emit TM byte 3 = `day_mask` with bit 7 cleared when
+`config.enabled` is false.)
 
 ---
 

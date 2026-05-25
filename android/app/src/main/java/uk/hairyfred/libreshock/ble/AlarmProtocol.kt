@@ -166,13 +166,17 @@ internal fun buildAlarmBlock(config: AlarmConfig, alarmId: Int): ByteArray {
     val nameBytes = config.name.toByteArray(Charsets.UTF_8).take(20).toByteArray()
     val an = tlv("AN", nameBytes)
 
-    // TM: [0x00, minute_bcd, hour_bcd, 0x80|day_mask]. High bit 0x80 marks armed.
+    // TM: [0x00, minute_bcd, hour_bcd, flag|day_mask]. High bit 0x80 marks armed.
+    // When config.enabled is false we clear that bit — the watch fires based
+    // on the TM armed bit, NOT the AO byte, so leaving 0x80 set caused
+    // disabled alarms to still trigger.
     val dayMask = config.weekdays and 0x7F
+    val tmFlag = if (config.enabled) 0x80 else 0x00
     val tm = tlv("TM", byteArrayOf(
         0x00,
         intToBcd(config.minute).toByte(),
         intToBcd(config.hour).toByte(),
-        (0x80 or dayMask).toByte(),
+        (tmFlag or dayMask).toByte(),
     ))
 
     // WD is a device constant in all observed vendor packets.

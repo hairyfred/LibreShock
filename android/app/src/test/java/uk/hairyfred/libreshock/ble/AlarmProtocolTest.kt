@@ -416,4 +416,73 @@ class AlarmProtocolTest {
         // CRC of "123456789" is 0x29B1 for CRC-16/CCITT-FALSE.
         assertEquals(0x29B1, crc16Ccitt("123456789".toByteArray()))
     }
+
+    /** Disabling an alarm must clear the TM armed bit AND the AO byte —
+     *  the watch fires based on TM byte 3's high bit, not AO, so leaving
+     *  TM=0x80 set caused disabled alarms to still trigger (fixed v0.1.11). */
+    @Test
+    fun disabledAlarmClearsTmArmedBit() {
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 7, minute = 30, name = "alarm",
+                weekdays = 0x3E,  // weekdays
+                enabled = false,  // <- the disable toggle
+                snooze = true, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = false),
+                zap = AlarmAction(enabled = false),
+            ),
+            alarmId = 1,
+        )
+        // Locate TM tag. TLV layout: 2-byte tag + 2-byte u16-LE length +
+        // payload. TM payload is 4 bytes [00, minBcd, hourBcd, flag|mask] —
+        // byte 3 is at tag-offset + 4 + 3 = +7.
+        val tmIdx = indexOfTag(ours, "TM")
+        assertEquals(true, tmIdx >= 0)
+        val tmByte3 = ours[tmIdx + 7].toInt() and 0xFF
+        assertEquals("TM byte 3 must have bit 0x80 cleared when disabled",
+            0, tmByte3 and 0x80)
+        assertEquals("TM byte 3 low bits preserve the day mask",
+            0x3E, tmByte3 and 0x7F)
+        // AO byte must also be 0x00 for a disabled alarm. AO is a single-
+        // byte payload at tag-offset + 4.
+        val aoIdx = indexOfTag(ours, "AO")
+        assertEquals(true, aoIdx >= 0)
+        val aoByte = ours[aoIdx + 4].toInt() and 0xFF
+        assertEquals("AO must be 0 for a disabled alarm", 0, aoByte)
+    }
+
+    /** Re-enabling the same alarm puts the armed bit back. */
+    @Test
+    fun reEnabledAlarmSetsTmArmedBit() {
+        val ours = buildAlarmBlock(
+            AlarmConfig(
+                hour = 7, minute = 30, name = "alarm",
+                weekdays = 0x3E,
+                enabled = true,
+                snooze = true, stimulusInterval = 15,
+                vibration = AlarmAction(enabled = true, count = 5, intensity = 50),
+                beep = AlarmAction(enabled = false),
+                zap = AlarmAction(enabled = false),
+            ),
+            alarmId = 1,
+        )
+        val tmIdx = indexOfTag(ours, "TM")
+        val tmByte3 = ours[tmIdx + 7].toInt() and 0xFF
+        assertEquals(0x80 or 0x3E, tmByte3)
+        val aoIdx = indexOfTag(ours, "AO")
+        val aoByte = ours[aoIdx + 4].toInt() and 0xFF
+        assertEquals(0x01, aoByte)
+    }
+
+    /** Find the index of a 2-byte ASCII tag (e.g. "TM", "AO") in a block,
+     *  returning -1 if absent. The tag header lives at the returned index;
+     *  the 2-byte u16-LE length follows, then the payload. */
+    private fun indexOfTag(block: ByteArray, tag: String): Int {
+        val t = tag.toByteArray(Charsets.US_ASCII)
+        for (i in 0..(block.size - 4)) {
+            if (block[i] == t[0] && block[i + 1] == t[1]) return i
+        }
+        return -1
+    }
 }

@@ -782,13 +782,16 @@ def _build_alarm_hac_block(config: AlarmConfig, alarm_id: int) -> bytes:
     name_bytes = config.name.encode('utf-8')[:20]
     an_block = _tlv(b'AN', name_bytes)
 
-    # TM: [0x00, minute_bcd, hour_bcd, 0x80|day_mask]. The high bit (0x80) marks
+    # TM: [0x00, minute_bcd, hour_bcd, flag|day_mask]. The high bit (0x80) marks
     # the alarm as armed; bits 0-6 are the weekday repeat mask using the same
-    # values as Weekday.* constants. Templates from device default have flag=0x00.
+    # values as Weekday.* constants. When config.enabled is False we clear the
+    # armed bit — the watch fires based on the TM armed bit, NOT the AO byte,
+    # so leaving 0x80 set caused disabled alarms to still trigger.
     minute_bcd = _int_to_bcd(config.minute)
     hour_bcd = _int_to_bcd(config.hour)
     day_mask = config.weekdays & 0x7F
-    tm_block = _tlv(b'TM', bytes([0x00, minute_bcd, hour_bcd, 0x80 | day_mask]))
+    tm_flag = 0x80 if config.enabled else 0x00
+    tm_block = _tlv(b'TM', bytes([0x00, minute_bcd, hour_bcd, tm_flag | day_mask]))
 
     # WD is a device constant in all observed vendor-app packets (0x1E).
     # The actual repeat-day mask lives in TM byte 3.
