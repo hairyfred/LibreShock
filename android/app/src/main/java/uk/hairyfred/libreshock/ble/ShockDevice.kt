@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -63,13 +64,20 @@ class ShockDevice(private val context: Context) {
             return rest.startsWith("lok") || (rest.isNotEmpty() && rest[0].isDigit())
         }
 
-        // The Pavlok-3 "Action Settings" service. Used as a feature-probe at
-        // connect time: if a device exposes this service, we know it speaks
-        // the protocol LibreShock implements. Pavlok-4 ships with a different
-        // service scheme (66651000-39f4-11ed-..., etc.) and won't accept any
-        // of our writes — we detect that case and surface a clear error
-        // instead of silently failing on the first read.
+        // The Pavlok-3 "Action Settings" service. Documented here for
+        // reference; we previously used "this is absent" to detect a
+        // Pavlok-4 but Android service discovery is flaky enough on first
+        // connect (returns an incomplete service list sometimes) that the
+        // absence check caused false positives. We now check for the
+        // Pavlok-4 service affirmatively instead — see [SERVICE_PAVLOK4].
         val SERVICE_ACTIONS: UUID = UUID.fromString("156e1000-a300-4fea-897b-86f698d74461")
+
+        // Pavlok-4 / Shock Clock Max command service. Confirmed present
+        // on a user-supplied debug scan (May 2026). If we see THIS UUID
+        // we know we're talking to a Pavlok 4 (or a future model sharing
+        // the same scheme) — none of LibreShock's writes will work, so we
+        // surface a clear "unsupported" state instead of silently failing.
+        val SERVICE_PAVLOK4: UUID = UUID.fromString("66651000-39f4-11ed-92bd-832abac11ab4")
 
         // Action characteristics (service 156e1000)
         val CHAR_VIBE: UUID = UUID.fromString("00001001-0000-1000-8000-00805f9b34fb")
@@ -186,12 +194,17 @@ class ShockDevice(private val context: Context) {
             _connectionState.value = ConnectionState.Disconnected
             return false
         }
-        // Pavlok-3 protocol probe: the Action Settings service must exist.
-        // Pavlok-4 (and possibly other future models) use a different service
-        // UUID scheme and would silently fail every subsequent operation —
-        // surface that as Unsupported so the UI can show a clear message.
+        // Affirmative Pavlok-4 detection: if the watch exposes the
+        // 66651000-... command service, we know it speaks the Pavlok-4
+        // protocol which LibreShock doesn't support, and we surface an
+        // Unsupported state instead of failing on the first read. We
+        // check for presence of this service (not absence of the
+        // Pavlok-3 service) because Android's GATT cache can return an
+        // incomplete service list on the first connect — and a false
+        // positive there had been flagging real Pavlok-3 watches as
+        // Pavlok-4 incorrectly.
         val g = gatt
-        if (g != null && g.getService(SERVICE_ACTIONS) == null) {
+        if (g != null && g.getService(SERVICE_PAVLOK4) != null) {
             val modelName = runCatching {
                 readChar(CHAR_MODEL)?.toString(Charsets.UTF_8)
             }.getOrNull()
@@ -490,15 +503,36 @@ class ShockDevice(private val context: Context) {
 
     // ---- Instant actions ----
 
-    suspend fun vibrate(intensity: Int = 100, count: Int = 1, onTime: Int = 22, offTime: Int = 22): Boolean =
-        gattMutex.withLock {
-            writeChar(CHAR_VIBE, byteArrayOf(TRIGGER_ENABLED, count.toByte(), intensity.toByte(), onTime.toByte(), offTime.toByte()))
-        }
+    // count > 1 is implemented client-side as a loop with [BURST_GAP_MS]
+    // gaps, because the watch firmware ignores the count byte the protocol
+    // claims to expose (verified May 2026 — see CLAUDE.md Action Commands).
+    // onTime/offTime are kept for back-compat but ignored by the watch.
+    private val BURST_GAP_MS = 200L
 
-    suspend fun beep(intensity: Int = 80, count: Int = 1, onTime: Int = 22, offTime: Int = 22): Boolean =
-        gattMutex.withLock {
-            writeChar(CHAR_BEEP, byteArrayOf(TRIGGER_ENABLED, count.toByte(), intensity.toByte(), onTime.toByte(), offTime.toByte()))
+    suspend fun vibrate(
+        intensity: Int = 100, count: Int = 1,
+        onTime: Int = 22, offTime: Int = 22,
+    ): Boolean = burstWrite(CHAR_VIBE, count, intensity, onTime, offTime)
+
+    suspend fun beep(
+        intensity: Int = 80, count: Int = 1,
+        onTime: Int = 22, offTime: Int = 22,
+    ): Boolean = burstWrite(CHAR_BEEP, count, intensity, onTime, offTime)
+
+    private suspend fun burstWrite(
+        char: UUID, count: Int, intensity: Int, onTime: Int, offTime: Int,
+    ): Boolean = gattMutex.withLock {
+        var ok = true
+        repeat(count) { i ->
+            if (i > 0) kotlinx.coroutines.delay(BURST_GAP_MS)
+            val payload = byteArrayOf(
+                TRIGGER_ENABLED, 1.toByte(), intensity.toByte(),
+                onTime.toByte(), offTime.toByte(),
+            )
+            if (!writeChar(char, payload)) { ok = false; return@repeat }
         }
+        ok
+    }
 
     suspend fun zap(intensity: Int = 50): Boolean =
         gattMutex.withLock {
@@ -631,12 +665,25 @@ class ShockDevice(private val context: Context) {
             Log.e(TAG, "Characteristic $uuid not found"); cont.resume(false); return@suspendCoroutine
         }
         writeCont = cont
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(char, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        // Check the start-of-write return value: if Android's BLE stack
+        // refuses to enqueue this write (e.g. busy with a previous one
+        // that's still in flight, or app paused), the onCharacteristicWrite
+        // callback will NEVER fire — without handling that we'd hang the
+        // coroutine forever and starve the gattMutex for every subsequent
+        // request. Resume false on failure so the caller sees a clean error
+        // and the lock releases.
+        val started: Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeCharacteristic(char, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+                BluetoothStatusCodes.SUCCESS
         } else {
             char.value = data
             char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            g.writeCharacteristic(char)
+            @Suppress("DEPRECATION") g.writeCharacteristic(char)
+        }
+        if (!started) {
+            Log.w(TAG, "writeCharacteristic($uuid) refused by BLE stack")
+            writeCont = null
+            cont.resume(false)
         }
     }
 

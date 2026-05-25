@@ -34,7 +34,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Settings
@@ -104,6 +106,7 @@ import uk.hairyfred.libreshock.ui.DeviceInfoScreen
 import uk.hairyfred.libreshock.ui.HandRaiseScreen
 import uk.hairyfred.libreshock.ble.SleepNight
 import uk.hairyfred.libreshock.ui.SleepHistoryScreen
+import uk.hairyfred.libreshock.ui.ApiSettingsScreen
 import uk.hairyfred.libreshock.ui.SleepNightDetailScreen
 import uk.hairyfred.libreshock.ui.TimerStopwatchScreen
 import uk.hairyfred.libreshock.ui.theme.LibreShockTheme
@@ -139,7 +142,11 @@ fun AppRoot() {
     var alarms by remember { mutableStateOf<List<AlarmConfig>?>(null) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("libreshock", Context.MODE_PRIVATE) }
-    val device = remember { ShockDevice(context) }
+    // ShockDevice is owned by [LibreShockApp] so it can be shared with the
+    // optional Remote API foreground service. While that service isn't
+    // running, the device's lifecycle is effectively identical to before
+    // (process dies on swipe-away → device with it).
+    val device = remember { context.shockDevice() }
     val batteryHistory = remember { BatteryHistory(context) }
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -340,6 +347,14 @@ fun AppRoot() {
             if (!granted) notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
         AlarmNotifier.ensureChannel(context)
+        // If the Remote API was on when the app last ran, restart its
+        // foreground service. Android kills services on app reinstall /
+        // reboot / process death; the user pref persists, so without this
+        // the toggle would show "on" while no server is actually running.
+        if (prefs.getBoolean(uk.hairyfred.libreshock.server.ApiAuth.PREF_ENABLED, false) &&
+            !uk.hairyfred.libreshock.server.RemoteApiService.running) {
+            uk.hairyfred.libreshock.server.RemoteApiService.start(context)
+        }
     }
 
     // On launch, if BT is off, surface the enable-Bluetooth prompt up front.
@@ -442,6 +457,7 @@ fun AppRoot() {
         "tns" -> "Timer & Stopwatch"
         "sleep_history" -> "Sleep history"
         "sleep_night" -> "Sleep details"
+        "api_settings" -> "Remote API"
         "puzzle_solve" -> "Solve to dismiss"
         else -> "LibreShock"
     }
@@ -452,6 +468,7 @@ fun AppRoot() {
         screen = when (screen) {
             "alarm_edit" -> "alarms"
             "sleep_night" -> "sleep_history"
+            "api_settings" -> "settings"
             else -> "main"
         }
     }
@@ -468,6 +485,7 @@ fun AppRoot() {
                             screen = when (screen) {
                                 "alarm_edit" -> "alarms"
                                 "sleep_night" -> "sleep_history"
+                                "api_settings" -> "settings"
                                 else -> "main"
                             }
                         }) {
@@ -497,7 +515,9 @@ fun AppRoot() {
                         confettiParties = emptyList()
                     }
                 },
+                onOpenApiSettings = { screen = "api_settings" },
             )
+            "api_settings" -> ApiSettingsScreen(padding = padding)
             "alarms" -> AlarmsScreen(
                 alarms = alarms,
                 padding = padding,
@@ -908,6 +928,7 @@ private fun SettingsScreen(
     device: ShockDevice,
     padding: PaddingValues,
     onConfettiPreview: () -> Unit,
+    onOpenApiSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -957,6 +978,33 @@ private fun SettingsScreen(
                 prefs.edit { putBoolean("auto_connect", it) }
             },
         )
+        // Remote API entry point — opens a dedicated sub-screen with toggle,
+        // port, token, etc. Kept here so the user can find it from main
+        // Settings; the actual server controls live in [ApiSettingsScreen].
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenApiSettings),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Remote API", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "HTTP server for triggering actions from other devices. " +
+                            "Off by default; needs a persistent notification while on.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Open",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

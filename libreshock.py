@@ -1054,7 +1054,13 @@ class ShockDevice:
         if not self.address and not await self.find_device():
             return False
 
-        self.client = BleakClient(self.address, timeout=20.0)
+        # On Windows (bleak's WinRT backend), passing a bare MAC address
+        # to BleakClient does a fresh device lookup that fails with
+        # BleakDeviceNotFoundError unless the device is already in the
+        # OS's BLE cache. Pass the BLEDevice object from the scan when we
+        # have one — bleak then uses it directly and the connect succeeds.
+        target = self.device if self.device is not None else self.address
+        self.client = BleakClient(target, timeout=20.0)
         await self.client.connect()
         print(f"Connected: {self.client.is_connected}")
         return self.client.is_connected
@@ -1065,32 +1071,44 @@ class ShockDevice:
             await self.client.disconnect()
             print("Disconnected")
 
-    async def vibrate(self, intensity=100, count=1, on_time=22, off_time=22):
+    # Gap between writes when count > 1. Small enough to feel like a
+    # connected burst, large enough that the buzzes are distinct.
+    _BURST_GAP_S = 0.2
+
+    async def vibrate(self, intensity=100, count=1, on_time=22, off_time=22,
+                      gap_s: float = _BURST_GAP_S):
         """
-        Trigger vibration
+        Trigger one or more vibration pulses.
 
         Args:
-            intensity: 0-100 (percent)
-            count: number of pulses (1-255)
-            on_time: vibration on duration
-            off_time: pause between pulses
+            intensity: 0-100 (percent) — actually honoured by the watch.
+            count: number of pulses (1-255). Implemented client-side as a
+                loop of single-shot commands, because the watch firmware
+                ignores the count byte the protocol claims to expose
+                (verified May 2026 — see CLAUDE.md Action Commands).
+            on_time, off_time: kept for back-compat, sent but ignored by
+                the watch.
+            gap_s: pause between pulses when count > 1.
         """
-        data = bytes([TRIGGER_ENABLED, count, intensity, on_time, off_time])
-        await self.client.write_gatt_char(CHAR_VIBE, data)
+        for i in range(count):
+            if i > 0:
+                await asyncio.sleep(gap_s)
+            data = bytes([TRIGGER_ENABLED, 1, intensity, on_time, off_time])
+            await self.client.write_gatt_char(CHAR_VIBE, data)
         print(f"Vibrate: intensity={intensity}%, count={count}")
 
-    async def beep(self, intensity=80, count=1, on_time=22, off_time=22):
+    async def beep(self, intensity=80, count=1, on_time=22, off_time=22,
+                   gap_s: float = _BURST_GAP_S):
         """
-        Trigger beep/buzzer
-
-        Args:
-            intensity: 0-100 (percent)
-            count: number of beeps (1-255)
-            on_time: beep duration
-            off_time: pause between beeps
+        Trigger one or more beeps. Same protocol caveat as [vibrate] —
+        count is implemented client-side as a loop because the watch
+        firmware ignores the count byte.
         """
-        data = bytes([TRIGGER_ENABLED, count, intensity, on_time, off_time])
-        await self.client.write_gatt_char(CHAR_BEEP, data)
+        for i in range(count):
+            if i > 0:
+                await asyncio.sleep(gap_s)
+            data = bytes([TRIGGER_ENABLED, 1, intensity, on_time, off_time])
+            await self.client.write_gatt_char(CHAR_BEEP, data)
         print(f"Beep: intensity={intensity}%, count={count}")
 
     async def zap(self, intensity=50):

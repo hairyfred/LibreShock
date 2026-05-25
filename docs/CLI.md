@@ -49,7 +49,10 @@ python libreshock.py zap  -i 50         # one zap at 50% intensity
 Common flags:
 
 - `-i, --intensity 0-100` — power level for the action (default 50)
-- `-c, --count N` — number of pulses for vibe / beep (default 1)
+- `-c, --count N` — number of pulses for vibe / beep (default 1). The
+  watch's instant-action protocol ignores the count byte, so this is
+  implemented client-side as a loop of single-shot commands with a small
+  gap between them.
 - `-a, --address F1:1F:...` — BLE MAC, if you want to skip the scan
 
 ## Alarms
@@ -305,3 +308,30 @@ Device Information service strings. `--censor` redacts the BLE MAC,
 the trailing characters of the BLE name, and the serial-number string
 so you can share the file publicly. Omit `--censor` if you're attaching
 it to a private channel.
+
+## Remote API server
+
+A separate script, `libreshock_server.py`, runs a small aiohttp HTTP
+server that exposes vibrate / beep / zap / alarm-stop over the network
+so external devices can trigger them. Off by default (you have to run
+the script). Same wire format as the Android app's `Settings → Remote
+API`. Full spec in [API.md](API.md).
+
+```sh
+pip install bleak aiohttp
+python libreshock_server.py
+```
+
+Useful flags:
+
+- `--port 9000` — change the port (default 8765).
+- `--bind 0.0.0.0` — make the API reachable from other devices on the
+  LAN (default `127.0.0.1`, localhost-only).
+- `--token <token>` — override the auto-generated token. Default reads
+  and writes `~/.libreshock/server-token.txt`.
+- `--address F1:1F:...` — connect to a specific BLE MAC instead of
+  auto-scanning.
+
+The script prints the bind address and auth token on startup. Wake the
+watch (tap any button) just before launching — Pavloks sleep within
+seconds when idle and the scan needs to see them advertising.

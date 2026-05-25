@@ -15,8 +15,8 @@ android {
         applicationId = "uk.hairyfred.libreshock"
         minSdk = 26
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.1.12"
+        versionCode = 20
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -77,6 +77,10 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     // Confetti animation on successful alarm dismissal. ISC license.
     implementation("nl.dionsegijn:konfetti-compose:2.0.5")
+    // Ktor embedded server — backs the optional Remote API service.
+    // CIO engine is the lightweight Kotlin-native HTTP server. Apache 2.0.
+    implementation("io.ktor:ktor-server-core:2.3.13")
+    implementation("io.ktor:ktor-server-cio:2.3.13")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

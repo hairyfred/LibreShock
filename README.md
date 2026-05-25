@@ -63,6 +63,13 @@ Two interfaces:
   shows a snackbar with a link to the Releases page when a new tag is
   available. Off by default; turning it on deep-links to system app
   info so you can confirm LibreShock is allowed to use the network.
+- Opt-in **Remote API** — an HTTP server that lets other devices on your
+  network (Home Assistant, scripts, smart-home gear, etc.) trigger
+  vibrate / beep / zap / alarm-stop on the watch. Token-authenticated,
+  off by default. Available as the Android app's `Settings → Remote API`
+  sub-screen (runs as a foreground service while on), and as the
+  standalone `libreshock_server.py` Python script. Full spec in
+  [docs/API.md](docs/API.md).
 
 ## Status
 
@@ -179,6 +186,7 @@ implementation.
 
 ```
 libreshock.py        Python CLI (reference implementation)
+libreshock_server.py Optional aiohttp HTTP server exposing the Remote API
 parse_btsnoop.py     btsnoop_hci.log parser used during RE
 android/             Kotlin / Compose Android app
   app/src/main/.../ble/        Protocol + BLE wrapper

@@ -65,10 +65,16 @@ The **trigger mechanism** is the `0x80` bit in the first byte:
 | **LED** | `00001004-0000-1000-8000-00805f9b34fb` | `[0x81, ?, intensity, ?, ?]` | TBD |
 
 ### Parameter Ranges
-- **intensity**: 0-100 (percent)
-- **count**: 1-255 (number of pulses)
-- **on_time**: duration of action (default 22)
-- **off_time**: pause between pulses (default 22)
+- **intensity**: 0-100 (percent) — actually honoured by the watch.
+- **count / on_time / off_time**: **ignored**. The original RE assumed
+  these bytes controlled pulse count and per-pulse timing, but
+  empirical testing (May 2026) shows the watch fires a single fixed-
+  length action regardless of these bytes' values. We still write the
+  defaults (`count=1, on=22, off=22`) for byte-compatibility with the
+  shape vendor firmware expects, but callers wanting multiple pulses
+  must fire the command N times with their own pacing. If the alarm
+  block format is needed (which DOES honour count/intervals) use
+  `set_alarms` instead of the instant-action path.
 
 ### Reading Config (without triggering)
 Reading characteristics returns current settings with `0x01` prefix (enabled, not triggered):

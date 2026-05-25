@@ -30,6 +30,13 @@
          Settings → Check for updates automatically. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Required to host the optional Remote API server. Settings → Remote
+         API. Adds a persistent notification while the server is running;
+         that's Android's price for keeping the BLE connection alive in the
+         background. Off by default. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
@@ -38,6 +45,7 @@
         android:required="false" />
 
     <application
+        android:name=".LibreShockApp"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -70,6 +78,15 @@
             android:theme="@style/zxing_CaptureTheme"
             android:windowSoftInputMode="stateAlwaysHidden"
             tools:replace="screenOrientation" />
+
+        <!-- Optional Remote API server. Foreground service so the BLE
+             connection survives backgrounding. foregroundServiceType=
+             "connectedDevice" matches the actual use (Bluetooth peer);
+             Android 14+ enforces matching the runtime permission. -->
+        <service
+            android:name=".server.RemoteApiService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- Lets us share debug-report files via the system share sheet. -->
         <provider
