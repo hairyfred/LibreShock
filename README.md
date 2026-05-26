@@ -139,6 +139,8 @@ Full command reference: **[docs/CLI.md](docs/CLI.md)**.
 | Main | Alarms | Edit alarm |
 |------|--------|------------|
 | ![Main screen](docs/images/main.png) | ![Alarms list](docs/images/alarms.png) | ![Edit alarm](docs/images/edit-alarm.png) |
+| **Wake-up features** | **Hand raise** | **Sleep history** |
+| ![Wake-up features](docs/images/edit-alarm-features.png) | ![Hand raise](docs/images/hand-raise.png) | ![Sleep history](docs/images/sleep-history.png) |
 
 Pre-built signed APKs are attached to each release on the
 **[Releases page](https://github.com/hairyfred/Libreshock/releases)** — grab
