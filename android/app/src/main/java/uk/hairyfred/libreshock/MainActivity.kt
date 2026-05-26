@@ -347,11 +347,11 @@ fun AppRoot() {
             if (!granted) notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
         AlarmNotifier.ensureChannel(context)
-        // If the Remote API was on when the app last ran, restart its
-        // foreground service. Android kills services on app reinstall /
-        // reboot / process death; the user pref persists, so without this
-        // the toggle would show "on" while no server is actually running.
-        if (prefs.getBoolean(uk.hairyfred.libreshock.server.ApiAuth.PREF_ENABLED, false) &&
+        // If any background feature was on when the app last ran, restart
+        // the foreground service. Android kills services on app reinstall /
+        // reboot / process death; the user prefs persist, so without this
+        // the toggles would show "on" while nothing was actually running.
+        if (uk.hairyfred.libreshock.server.ApiAuth.shouldRunService(prefs) &&
             !uk.hairyfred.libreshock.server.RemoteApiService.running) {
             uk.hairyfred.libreshock.server.RemoteApiService.start(context)
         }
@@ -934,6 +934,10 @@ private fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var autoScan by remember { mutableStateOf(prefs.getBoolean("auto_scan", true)) }
     var autoConnect by remember { mutableStateOf(prefs.getBoolean("auto_connect", true)) }
+    var bgAlarmsEnabled by remember {
+        mutableStateOf(prefs.getBoolean(
+            uk.hairyfred.libreshock.server.ApiAuth.PREF_BG_ALARMS, false))
+    }
     var updateCheckEnabled by remember {
         mutableStateOf(prefs.getBoolean(
             uk.hairyfred.libreshock.ui.UpdateChecker.PREF_AUTO_CHECK,
@@ -978,6 +982,40 @@ private fun SettingsScreen(
                 prefs.edit { putBoolean("auto_connect", it) }
             },
         )
+        // Background alarm notifications — keeps the BLE alarm-fire
+        // listener alive via the foreground service so notifications work
+        // when the app is swiped away. Shares the service with Remote API.
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Background alarm notifications",
+                        style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Keep the BLE alarm-fire listener running while the " +
+                            "app is closed, so the system notification still " +
+                            "appears when the watch's alarm goes off. Adds a " +
+                            "persistent notification icon. Off by default.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = bgAlarmsEnabled, onCheckedChange = { wantOn ->
+                    bgAlarmsEnabled = wantOn
+                    prefs.edit { putBoolean(
+                        uk.hairyfred.libreshock.server.ApiAuth.PREF_BG_ALARMS, wantOn) }
+                    if (uk.hairyfred.libreshock.server.ApiAuth.shouldRunService(prefs)) {
+                        // Either restart so the service re-reads prefs and
+                        // wires up the alarm listener if newly enabled.
+                        uk.hairyfred.libreshock.server.RemoteApiService.stop(context)
+                        uk.hairyfred.libreshock.server.RemoteApiService.start(context)
+                    } else {
+                        uk.hairyfred.libreshock.server.RemoteApiService.stop(context)
+                    }
+                })
+            }
+        }
         // Remote API entry point — opens a dedicated sub-screen with toggle,
         // port, token, etc. Kept here so the user can find it from main
         // Settings; the actual server controls live in [ApiSettingsScreen].

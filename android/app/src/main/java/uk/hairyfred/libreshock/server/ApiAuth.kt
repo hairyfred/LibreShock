@@ -17,7 +17,17 @@ object ApiAuth {
     const val PREF_TOKEN = "api_token"
     const val PREF_ENABLED = "api_enabled"
     const val PREF_PORT = "api_port"
+    /** Background alarm notifications: when ON the foreground service stays
+     *  alive even with the Remote API off, keeping the BLE alarm-fire
+     *  listener running while the app is swiped away. Default OFF — the
+     *  cost is a persistent notification icon. */
+    const val PREF_BG_ALARMS = "bg_alarms_enabled"
     const val DEFAULT_PORT = 8765
+
+    /** True if any feature that needs the foreground service is enabled. */
+    fun shouldRunService(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(PREF_ENABLED, false) ||
+            prefs.getBoolean(PREF_BG_ALARMS, false)
 
     /** Return the stored token, generating one if none exists yet. Safe to
      *  call from any thread — SharedPreferences writes are atomic. */

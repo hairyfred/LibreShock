@@ -94,8 +94,16 @@ fun ApiSettingsScreen(
                 Switch(checked = enabled, onCheckedChange = { wantOn ->
                     enabled = wantOn
                     prefs.edit().putBoolean(ApiAuth.PREF_ENABLED, wantOn).apply()
-                    if (wantOn) RemoteApiService.start(context)
-                    else RemoteApiService.stop(context)
+                    if (ApiAuth.shouldRunService(prefs)) {
+                        // Restart so the service re-reads prefs and
+                        // (de)activates the Ktor server side accordingly,
+                        // even if the bg-alarms duty is what's keeping it
+                        // alive in the other state.
+                        RemoteApiService.stop(context)
+                        RemoteApiService.start(context)
+                    } else {
+                        RemoteApiService.stop(context)
+                    }
                 })
             }
         }

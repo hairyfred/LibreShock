@@ -161,15 +161,24 @@ requested except `INTERNET` (normal permission, granted at install).
 
 ### Limitations
 
-The alarm-firing notification is **process-alive only** — there's no
-foreground service. The watch only emits the alarm-fire BLE packet to
-something actively connected, so the app needs to be running (foreground
-or backgrounded) to receive it and post the notification. If you swipe
-LibreShock away from Recents, the BLE connection drops and you'll only
-get the alarm on the watch itself (which is what the watch is for —
-this is a convenience layer, not a replacement). A future foreground-
-service mode could keep the connection alive indefinitely at the cost
-of a permanent notification icon and some battery; not implemented yet.
+The alarm-firing notification is **process-alive by default** — without
+a foreground service, the watch can only emit the alarm-fire BLE packet
+to something actively connected, so the app needs to be running
+(foreground or backgrounded) to receive it and post the notification. If
+you swipe LibreShock away from Recents, the BLE connection drops and
+you'll only get the alarm on the watch itself.
+
+**Opt-in workaround**: `Settings → Background alarm notifications`. Turning
+this on starts the same foreground service used by the Remote API,
+which keeps the BLE connection alive and the alarm-fire listener
+running even with the app swiped away. The cost is a persistent
+notification icon and some background battery use. Off by default.
+
+The system notification posted by the background service is intentionally
+"dumb" — no guarantor-aware text or actions. If the firing alarm has a
+QR-code or Puzzle guarantor, tap the notification to open the app and
+complete the gate in the in-app dialog. Stop and Snooze actions in the
+notification work directly when the app is killed.
 
 From the command line, with Android Studio's bundled JDK on `JAVA_HOME`:
 
