@@ -551,6 +551,36 @@ fun AppRoot() {
                 onValidate = {
                     try { device.validateAlarms() } catch (_: Exception) { null }
                 },
+                onBulkSetEnabled = { indices, wantOn ->
+                    rootScope.launch {
+                        val current = alarms?.toMutableList() ?: return@launch
+                        // Mutate each selected index in place. The full
+                        // list is then written to the watch once — the
+                        // protocol replaces the entire alarm table per
+                        // write, so bulk = one BLE transaction.
+                        var changed = false
+                        for (i in indices) {
+                            if (i !in current.indices) continue
+                            if (current[i].enabled == wantOn) continue
+                            current[i] = current[i].copy(enabled = wantOn)
+                            changed = true
+                        }
+                        if (!changed) return@launch
+                        alarms = current  // optimistic
+                        try { device.setAlarms(current) } catch (_: Exception) {}
+                        refreshAlarms()
+                    }
+                },
+                onBulkDelete = { indices ->
+                    rootScope.launch {
+                        val current = alarms ?: return@launch
+                        val kept = current.filterIndexed { i, _ -> i !in indices }
+                        if (kept.size == current.size) return@launch
+                        alarms = kept  // optimistic
+                        try { device.setAlarms(kept) } catch (_: Exception) {}
+                        refreshAlarms()
+                    }
+                },
             )
             "alarm_edit" -> AlarmEditScreen(
                 device = device,

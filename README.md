@@ -21,7 +21,10 @@ Two interfaces:
 ## Features
 
 - Trigger vibrate / beep / zap (with adjustable intensity)
-- Manage alarms: list, create, edit, enable/disable, delete, per-day repeats
+- Manage alarms: list, create, edit, enable/disable, delete, per-day repeats.
+  *(Android only)* long-press to enter a multi-select mode — bulk
+  enable / disable / delete in a single watch write, plus a duplicate
+  action when exactly one alarm is selected (opens the editor prefilled).
 - Set a wake-up guarantor on any alarm — Jumping Jacks (counted on the
   watch), [QR code scan](docs/images/libreshock-qr.png), or Puzzle unlock
   (memory grid or arithmetic equation, randomly picked; toggleable in
@@ -76,7 +79,7 @@ Two interfaces:
 Tested against:
 
 - **BLE Name Pattern**: `Pavlok-*` (e.g. `Pavlok-3-XXXX`) and the shorter
-  `Pav<model>-*` scheme (e.g. `Pav4-8cbf`) — both are matched
+  `Pav<model>-*` scheme (e.g. `Pav4-XXXX`) — both are matched
 - **Manufacturer**: Behavioral Technology Group, Inc.
 - **Model**: Pavlok-S (Pavlok 3)
 - **Hardware**: 6.0.0

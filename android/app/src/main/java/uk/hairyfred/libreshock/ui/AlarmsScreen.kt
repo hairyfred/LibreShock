@@ -1,7 +1,10 @@
 package uk.hairyfred.libreshock.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,8 +22,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -28,6 +36,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
@@ -67,6 +76,7 @@ private val DAY_BITS = listOf(
     Weekday.THURSDAY, Weekday.FRIDAY, Weekday.SATURDAY,
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AlarmsScreen(
     alarms: List<AlarmConfig>?,
@@ -76,6 +86,13 @@ fun AlarmsScreen(
     onToggleEnabled: (index: Int, enabled: Boolean) -> Unit,
     onClearAll: () -> Unit,
     onValidate: suspend () -> List<AlarmDiagnostic>?,
+    /** Bulk enable/disable for the given indices. Same path as the single
+     *  switch: app mutates the list in memory and calls setAlarms once
+     *  with the new list. No BLE queueing needed — the watch replaces
+     *  its whole alarm table atomically per write. */
+    onBulkSetEnabled: (indices: Set<Int>, enabled: Boolean) -> Unit,
+    /** Bulk delete. Same single-setAlarms pattern as above. */
+    onBulkDelete: (indices: Set<Int>) -> Unit,
 ) {
     // alarms == null means "not loaded yet" (or read failed). Empty list means
     // we have a confirmed empty state. Trigger an initial refresh if we don't
@@ -90,10 +107,24 @@ fun AlarmsScreen(
     }
 
     var showClearDialog by remember { mutableStateOf(false) }
+    var showBulkDeleteDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var validating by remember { mutableStateOf(false) }
     var validationResult by remember {
         mutableStateOf<Pair<Int, List<AlarmValidationIssue>>?>(null)
+    }
+
+    // Multi-select state. Indices into [list]. Reset to empty whenever the
+    // alarm list shape changes underneath us (refresh, delete, etc.) so we
+    // never have stale indices pointing at removed alarms.
+    var selectedIndices by remember { mutableStateOf(setOf<Int>()) }
+    LaunchedEffect(list.size) {
+        if (selectedIndices.any { it >= list.size }) selectedIndices = emptySet()
+    }
+    val inSelectionMode = selectedIndices.isNotEmpty()
+    // Android back exits selection mode rather than navigating away.
+    androidx.activity.compose.BackHandler(enabled = inSelectionMode) {
+        selectedIndices = emptySet()
     }
 
     Column(
@@ -103,29 +134,82 @@ fun AlarmsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(onClick = { onEdit(null, null) }) { Text("+ Add alarm") }
-            OutlinedButton(onClick = onRefresh, enabled = !validating) { Text("Refresh") }
-            OutlinedButton(
-                enabled = !validating,
-                onClick = {
-                    scope.launch {
-                        validating = true
-                        val fresh = try { onValidate() } catch (_: Exception) { null }
-                        if (fresh == null) {
-                            validationResult = -1 to listOf(AlarmValidationIssue(
-                                0, "Couldn't read alarms from the watch."))
-                        } else {
-                            val issues = computeAlarmValidationIssues(fresh, alarms)
-                            validationResult = fresh.size to issues
-                        }
-                        validating = false
+        if (inSelectionMode) {
+            // Contextual action row. Replaces Add / Refresh / Validate while
+            // any alarms are selected.
+            val selected = selectedIndices
+            val selectedAlarms = selected.mapNotNull { list.getOrNull(it) }
+            val anyEnabled = selectedAlarms.any { it.enabled }
+            val anyDisabled = selectedAlarms.any { !it.enabled }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { selectedIndices = emptySet() }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cancel")
+                }
+                Text(
+                    "${selected.size} selected",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                if (anyDisabled) {
+                    IconButton(onClick = {
+                        onBulkSetEnabled(selected, true); selectedIndices = emptySet()
+                    }) {
+                        Icon(Icons.Filled.PowerSettingsNew, contentDescription = "Enable",
+                            tint = MaterialTheme.colorScheme.primary)
                     }
-                },
-            ) { Text(if (validating) "Validating…" else "Validate") }
+                }
+                if (anyEnabled) {
+                    IconButton(onClick = {
+                        onBulkSetEnabled(selected, false); selectedIndices = emptySet()
+                    }) {
+                        Icon(Icons.Filled.PowerSettingsNew, contentDescription = "Disable",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (selected.size == 1) {
+                    IconButton(onClick = {
+                        // Open the edit screen prefilled with this alarm but
+                        // as a NEW one (index = null → save creates).
+                        val src = selectedAlarms.firstOrNull()
+                        if (src != null) onEdit(src, null)
+                        selectedIndices = emptySet()
+                    }) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Duplicate")
+                    }
+                }
+                IconButton(onClick = { showBulkDeleteDialog = true }) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete",
+                        tint = MaterialTheme.colorScheme.error)
+                }
+            }
+        } else {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(onClick = { onEdit(null, null) }) { Text("+ Add alarm") }
+                OutlinedButton(onClick = onRefresh, enabled = !validating) { Text("Refresh") }
+                OutlinedButton(
+                    enabled = !validating,
+                    onClick = {
+                        scope.launch {
+                            validating = true
+                            val fresh = try { onValidate() } catch (_: Exception) { null }
+                            if (fresh == null) {
+                                validationResult = -1 to listOf(AlarmValidationIssue(
+                                    0, "Couldn't read alarms from the watch."))
+                            } else {
+                                val issues = computeAlarmValidationIssues(fresh, alarms)
+                                validationResult = fresh.size to issues
+                            }
+                            validating = false
+                        }
+                    },
+                ) { Text(if (validating) "Validating…" else "Validate") }
+            }
         }
         statusText?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
@@ -136,13 +220,25 @@ fun AlarmsScreen(
             itemsIndexed(list) { index, alarm ->
                 AlarmCard(
                     alarm = alarm,
-                    onClick = { onEdit(alarm, index) },
+                    selected = index in selectedIndices,
+                    selectionMode = inSelectionMode,
+                    onClick = {
+                        if (inSelectionMode) {
+                            selectedIndices = if (index in selectedIndices)
+                                selectedIndices - index else selectedIndices + index
+                        } else {
+                            onEdit(alarm, index)
+                        }
+                    },
+                    onLongClick = {
+                        selectedIndices = selectedIndices + index
+                    },
                     onToggleEnabled = { newEnabled -> onToggleEnabled(index, newEnabled) },
                 )
             }
         }
 
-        if (list.isNotEmpty()) {
+        if (list.isNotEmpty() && !inSelectionMode) {
             TextButton(
                 onClick = { showClearDialog = true },
                 modifier = Modifier.fillMaxWidth(),
@@ -195,6 +291,38 @@ fun AlarmsScreen(
         )
     }
 
+    if (showBulkDeleteDialog) {
+        val n = selectedIndices.size
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteDialog = false },
+            title = { Text(if (n == 1) "Delete this alarm?" else "Delete $n alarms?") },
+            text = {
+                Text(
+                    "Removes the selected alarm" + (if (n == 1) "" else "s") +
+                        " from the watch in a single write. " +
+                        "The vendor app may still show them — it caches " +
+                        "alarms locally and isn't aware they were removed.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val toDelete = selectedIndices
+                        showBulkDeleteDialog = false
+                        selectedIndices = emptySet()
+                        onBulkDelete(toDelete)
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text(if (n == 1) "Delete" else "Delete $n") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkDeleteDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     if (showClearDialog) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
@@ -225,17 +353,34 @@ fun AlarmsScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AlarmCard(
     alarm: AlarmConfig,
+    selected: Boolean,
+    selectionMode: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
 ) {
+    val borderColour = if (selected) MaterialTheme.colorScheme.primary
+                       else androidx.compose.ui.graphics.Color.Transparent
+    val cardColors = if (selected)
+        CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+                .copy(alpha = 0.35f),
+        )
+    else CardDefaults.cardColors()
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(),
+            .border(
+                width = if (selected) 2.dp else 0.dp,
+                color = borderColour,
+                shape = CardDefaults.shape,
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        colors = cardColors,
     ) {
         Row(
             modifier = Modifier
@@ -243,6 +388,31 @@ private fun AlarmCard(
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Leading selection indicator in selection mode. Keeps the
+            // visual hint visible even when the row is scrolled past the
+            // background tint.
+            if (selectionMode) {
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.size(12.dp))
+            }
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -258,7 +428,12 @@ private fun AlarmCard(
                 Spacer(Modifier.height(4.dp))
                 Text(stimSummary(alarm), style = MaterialTheme.typography.bodySmall)
             }
-            Switch(checked = alarm.enabled, onCheckedChange = onToggleEnabled)
+            // Hide the per-row switch in selection mode so taps don't
+            // accidentally toggle an alarm when the user means to add to
+            // the selection.
+            if (!selectionMode) {
+                Switch(checked = alarm.enabled, onCheckedChange = onToggleEnabled)
+            }
         }
     }
 }
